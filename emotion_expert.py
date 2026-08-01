@@ -471,7 +471,7 @@ AI：「{bot_msg}」
                     updates['relationship_text'] = "正常关系"
                 
                 if 'attitude' in data and data['attitude']:
-                    updates['attitude_text'] = str(data['attitude']).strip()[:30]  # 限制长度
+                    updates['attitude_text'] = str(data['attitude']).strip()[:50]  # 限制长度
                 else:
                     updates['attitude_text'] = "友好交流"
                 

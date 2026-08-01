@@ -425,7 +425,7 @@ class EmotionAIProPlugin(Star):
 
             # 2. 智能判断
             elif self.config.enable_secondary_llm:
-                should_update, reason = self.update_manager.should_update_emotion(state, user_message, original_text)
+                should_update, reason, intensity = self.update_manager.should_update_emotion(state, user_message, original_text)
                 logger.info(f"[DEBUG] 智能判断结果: {should_update}, 原因: {reason}")
                 if should_update:
                     needs_update = True
