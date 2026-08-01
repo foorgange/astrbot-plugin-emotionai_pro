@@ -1,8 +1,18 @@
 name: astrbot_plugin_emotionai_pro
-version: v4.0.0
-author: asakiyoshi
-desc: EmotionAI Pro 是 AstrBot 的高级情感智能交互插件优化版，支持8维情感模型、4阶段关系演化、长期记忆系统、智能更新机制、排行榜、管理员控制、缓存优化与备份恢复等功能，让AI拥有真实、复杂、可持续演化的情感世界。
-url: https://github.com/asakiyoshi/astrbot-plugin-emotionai_pro
+version: v4.0.1
+author: asakiyoshi, foorgange
+desc: |
+  EmotionAI Pro 是 AstrBot 的高级情感智能交互插件，支持8维情感模型、4阶段关系演化、长期记忆系统、智能更新机制、排行榜、管理员控制、缓存优化与备份恢复等功能，让AI拥有真实、复杂、可持续演化的情感世界。
+
+  **原始作者：** [asakiyoshi](https://github.com/asakiyoshi)（原始版本 [EmotionAI-Pro](https://github.com/asakiyoshi/EmotionAI-Pro) v4.0.0）
+
+  **v4.0.1 修复（by foorgange）：**
+  - 修复 `should_update_emotion()` 返回值解包数量不匹配导致的好感度永远不更新的 bug（`ValueError: too many values to unpack`）
+  - 修复态度/关系描述正则验证过严的问题（中文描述频繁超长被拒）
+  - 同步 emotion_expert 中态度描述截断上限与验证规则一致
+
+  所有修复已向上游仓库提交 PR：#4
+url: https://github.com/foorgange/astrbot-plugin-emotionai_pro
 help: |
   用户命令:
   - /好感度 - 查看当前情感状态
