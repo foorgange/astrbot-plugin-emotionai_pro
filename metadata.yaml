@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.1
+version: v4.0.2
 author: asakiyoshi (原作者), foorgange (修复)
 desc: >
   基于 asakiyoshi 开发的 EmotionAI Pro v4.0.0 的修复版本。
@@ -15,7 +15,7 @@ desc: >
   排行榜、管理员控制、缓存优化与备份恢复等功能。
 
 
-  v4.0.1 修复内容（by foorgange）：
+  v4.0.2 修复内容（by foorgange）：
 
   1. 修复好感度永远不更新的核心 bug：should_update_emotion() 返回 3 个值
      但调用处只解包了 2 个，导致每次触发更新都抛 ValueError 崩溃。
