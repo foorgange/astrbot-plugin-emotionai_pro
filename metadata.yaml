@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.3
+version: v4.0.4
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -14,6 +14,16 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.4 修复内容（by foorgange）：
+
+  1. 修复"无效的态度描述格式"报错：验证正则不允许中文标点，
+     而 AI 生成的自然中文描述几乎必带标点（，。！？），导致
+     情感更新整体失败。
+     现已放行常见中文标点，并在情感分析提示词中要求态度/关系
+     描述不超过 20 字（禁止逗号连接的长句），截断兜底同步到 20 字。
+     实测描述正常更新（如"俏皮调侃带点宠溺"），报错清零。
 
 
   v4.0.3 修复内容（by foorgange）：
