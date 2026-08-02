@@ -11,6 +11,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api import AstrBotConfig, logger
+from astrbot.core.agent.message import TextPart
 
 # 导入优化后的模块
 from .config import PluginConfig, PrivacyLevel
@@ -318,18 +319,30 @@ class EmotionAIProPlugin(Star):
     
     @filter.on_llm_request(priority=100000)
     async def inject_enhanced_context(self, event: AstrMessageEvent, req: ProviderRequest):
-        """注入增强的情感上下文"""
+        """注入增强的情感上下文
+
+        ⚠️ 缓存友好修复：不再追加到 system_prompt，而是追加到
+        extra_user_content_parts（位于当前用户消息之后）。
+
+        原因：DeepSeek 等提供商的上下文缓存是「前缀缓存」，system_prompt 位于
+        消息数组最前面。情感状态（好感度/亲密度/情绪值/互动次数）几乎每条
+        消息都会变化，追加到 system_prompt 会导致前缀每次不同，后续所有历史
+        token 的缓存全部失效，缓存命中率暴跌。
+
+        追加到用户消息之后时，system_prompt + 历史消息的前缀保持稳定，只有
+        末尾新增的一小段会变化，缓存命中率可恢复至 80%+。
+        """
         user_key = self._get_user_key(event)
-        
+
         # 从缓存获取状态或从管理器获取
         state = await self.cache.get(f"state_{user_key}")
         if state is None:
             state = await self.user_manager.get_user_state(user_key)
             await self.cache.set(f"state_{user_key}", state)
-        
+
         # 构建融合的情感上下文
         emotional_context = self._build_enhanced_context(state)
-        req.system_prompt += f"\n{emotional_context}"
+        req.extra_user_content_parts.append(TextPart(text=f"\n{emotional_context}"))
         
     def _build_enhanced_context(self, state: EnhancedEmotionalState) -> str:
         """构建改进的主LLM上下文"""
