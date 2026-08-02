@@ -207,8 +207,10 @@ class TextDescriptions:
     update_count: int = 0
     
     # 有效的态度和关系模式
-    VALID_ATTITUDE_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5]{1,50}$'
-    VALID_RELATIONSHIP_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5]{1,80}$'
+    # 允许汉字、字母数字、空格、-，以及常见中文标点（，。！？、；：""''《》·）
+    # 注意：AI 生成的自然中文描述几乎必带标点，正则必须放行，否则会被误拒
+    VALID_ATTITUDE_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5\uff0c\u3002\uff01\uff1f\u3001\uff1b\uff1a""''\u300a\u300b\u00b7]{1,50}$'
+    VALID_RELATIONSHIP_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5\uff0c\u3002\uff01\uff1f\u3001\uff1b\uff1a""''\u300a\u300b\u00b7]{1,80}$'
     
     def __post_init__(self):
         """初始化后验证"""

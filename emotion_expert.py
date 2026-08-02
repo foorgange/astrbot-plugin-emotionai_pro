@@ -390,15 +390,15 @@ AI：「{bot_msg}」
 - 期待 (anticipation): 期待、盼望的程度
 
 【关系描述要求】
-- 描述双方的关系性质，保持生动有趣
+- 用不超过 20 个字概括双方的关系性质，保持生动有趣
 - 考虑当前好感度、亲密度和互动历史
-- 避免过于复杂冗长的描述
+- 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
 - 保持自然、符合人类社交常识
 
 【态度描述要求】
-- 描述AI对用户的回应态度或互动方式
+- 用不超过 20 个字描述AI对用户的回应态度或互动方式
 - 体现情感倾向和互动风格
-- 保持简洁明了
+- 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
 
 【输出格式】
 请输出严格的JSON格式：
@@ -415,11 +415,13 @@ AI：「{bot_msg}」
     "anger": 整数变化值,
     "anticipation": 整数变化值
   }},
-  "relationship": "关系描述",
-  "attitude": "态度描述"
+  "relationship": "关系描述（不超过20字）",
+  "attitude": "态度描述（不超过20字）"
 }}
 
-注意：如果对话情感不明显，可以设置部分值为0。"""
+注意：
+- 如果对话情感不明显，可以设置部分值为0。
+- relationship 和 attitude 必须简短（不超过20个字），禁止使用长句和标点堆砌。"""
 
     def _parse_emotion_analysis(self, analysis_text: str, current_state: EnhancedEmotionalState) -> Dict[str, Any]:
         """解析情感分析结果 - 增强版本"""
@@ -466,12 +468,12 @@ AI：「{bot_msg}」
                 
                 # 解析文本描述
                 if 'relationship' in data and data['relationship']:
-                    updates['relationship_text'] = str(data['relationship']).strip()[:50]  # 限制长度
+                    updates['relationship_text'] = str(data['relationship']).strip()[:20]  # 限制长度
                 else:
                     updates['relationship_text'] = "正常关系"
-                
+
                 if 'attitude' in data and data['attitude']:
-                    updates['attitude_text'] = str(data['attitude']).strip()[:50]  # 限制长度
+                    updates['attitude_text'] = str(data['attitude']).strip()[:20]  # 限制长度
                 else:
                     updates['attitude_text'] = "友好交流"
                 
