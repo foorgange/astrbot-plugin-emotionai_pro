@@ -1,8 +1,9 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.2
+version: v4.0.3
 author: asakiyoshi (原作者), foorgange (修复)
+social_link: https://github.com/foorgange
 desc: >
   基于 asakiyoshi 开发的 EmotionAI Pro v4.0.0 的修复版本。
   原仓库 https://github.com/asakiyoshi/EmotionAI-Pro 已长期未更新，
@@ -13,6 +14,17 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.3 修复内容（by foorgange）：
+
+  1. 修复 LLM 上下文缓存命中率暴跌的核心问题：情感状态块
+     （好感度/亲密度/情绪值/互动次数）每条消息都会变化，但被追加到
+     system_prompt 末尾。DeepSeek 等提供商使用前缀缓存，system_prompt
+     位于消息数组最前面，任何数字变化都会使后续所有历史 token 的缓存
+     全部失效，命中率跌至 25% 以下。
+     现已将情感上下文移动到 extra_user_content_parts（当前用户消息之后），
+     system_prompt 与历史消息前缀保持稳定，缓存命中率实测恢复至 97%。
 
 
   v4.0.2 修复内容（by foorgange）：

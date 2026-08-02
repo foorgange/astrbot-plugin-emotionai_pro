@@ -1,6 +1,28 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.0
+# EmotionAI Pro - 融合版情感智能插件 v4.0.3
 
 > 全部由 AI 编写，融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
+
+---
+
+## 📝 更新日志
+
+### v4.0.3（缓存命中率修复）
+
+**修复 LLM 上下文缓存命中率暴跌的核心问题**
+
+情感状态块（好感度/亲密度/情绪值/互动次数）几乎每条消息都会变化，但原版本将其追加到 **system_prompt** 末尾。DeepSeek 等提供商使用**前缀缓存**，system_prompt 位于消息数组最前面，任何数字变化都会使后续所有历史 token 的缓存全部失效，导致缓存命中率跌至 25% 甚至 0%。
+
+**修复**：将情感上下文从 `system_prompt` 移动到 `extra_user_content_parts`（当前用户消息之后）。system_prompt + 历史消息前缀保持稳定，只有末尾一小段变化。实测缓存命中率从 ~25% 恢复到 **97%**。
+
+**涉及文件**：`main.py`
+
+### v4.0.2（bug 修复）
+
+1. **修复好感度永远不更新**：`should_update_emotion()` 返回 3 个值 `(bool, str, int)`，但调用处只解包了 2 个，导致每次触发更新都抛 `ValueError` 崩溃。已在 `main.py` 修复解包数量。
+2. **修复态度/关系描述正则验证过严**：原限制 20/30 字，中文 AI 生成的描述频繁超长被拒，报「无效的态度描述格式」。已放宽到 50/80 字（`models.py`）。
+3. **同步态度截断上限**：`emotion_expert.py` 中态度文本截断从 30 字同步到 50 字，与验证规则一致。
+
+**涉及文件**：`main.py`、`models.py`、`emotion_expert.py`
 
 ---
 
