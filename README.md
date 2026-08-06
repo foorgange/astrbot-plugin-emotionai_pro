@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.5
+# EmotionAI Pro - 融合版情感智能插件 v4.0.6
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -9,6 +9,27 @@
 ---
 
 ## 📝 更新日志
+
+### v4.0.6（共同心情 + bot 人设名 + 崩溃修复）
+
+**`/好感度` 现在显示 bot 全局共享心情，描述不再出现「AI」字样**
+
+1. **共同心情（全局共享字段）**：心情不再是每个用户各自的 8 维情绪，而是 bot 基于对话/事件变化的**全局心情**，所有用户看到同一个心情与强度。全局心情独立持久化（`global_mood.json`），各用户的情感更新温和叠加（衰减 + clamp），防止单一用户刷爆。
+2. **`bot_name` 配置项**：关系/态度描述中的「AI」字样自动替换为 bot 人设名（如「雏草姬和塔菲」而非「亲密玩闹的ai伙伴」）。首次启动自动从 AstrBot persona 提取人设名（如「永雏塔菲」），也可在配置中手动修改。`bot_name` 为空时不替换，保持原文。
+3. **`下一阶段：` 字段修复**：`/好感度` 详细模式原显示的「下一阶段阈值」实为**当前阶段**阈值，现改为真正的下一阶段阈值；共生期显示「已达最高阶段」，负好感显示「恢复正常关系」。基础模式也补上该字段。
+4. **崩溃修复**：
+   - 调试命令（`/缓存统计` `/调试事件` `/调试记忆` `/修复互动统计` `/清理初始用户`）不再因缺少 `_is_admin` 崩溃（AttributeError）
+   - `/清理初始用户` 接错 handler 已修复
+   - 互动计数去重：一次触发情感更新的对话不再被计 2 次；无情感更新的普通对话不再计入互动次数（互动次数反映「有情感影响的对话」）
+   - `/修复互动统计` 现在正确设置负面互动数（`positive + negative = total`）
+   - `stability_score` 不再出现 `-inf`（从未互动的用户）
+   - `/设置态度` `/设置关系` 现在校验格式并返回友好错误信息
+   - `/设置好感` `/设置亲密` `/重置好感` 写命令后缓存立即失效，不再残留旧状态
+   - `/隐私级别` 现在持久化到磁盘，重启不丢失
+   - `cache.py` 移除 `xxhash` 裸导入，无 `xxhash` 环境自动降级 `hashlib`
+5. **缓存安全**：全局心情只改用户可见显示层 + 独立全局持久化，**不触碰** `inject_enhanced_context` 的注入结构（仍在 `extra_user_content_parts` 之后），缓存命中率不受影响。
+
+**涉及文件**：`global_mood.py`（新增）、`main.py`、`command_handlers.py`、`relationship_manager.py`、`emotion_expert.py`、`config.py`、`managers.py`、`cache.py`、`storage.py`
 
 ### v4.0.5（心情强度显示）
 

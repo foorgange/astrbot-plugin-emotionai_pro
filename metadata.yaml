@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.5
+version: v4.0.6
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -14,6 +14,29 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.6 修复内容（by foorgange）：
+
+  1. /好感度 心情改为 bot 全局共享字段：bot 基于对话/事件改变
+     心情及强度，所有用户看到同一个心情（独立持久化 global_mood.json，
+     各用户情感更新温和衰减 + clamp 叠加，防单一用户刷爆）。
+  2. 新增 bot_name 配置项：关系/态度描述中的"AI"字样自动替换为
+     bot 人设名（如"亲密玩闹的ai伙伴"→"亲密玩闹的塔菲伙伴"）。
+     首次启动自动从 AstrBot persona 提取人设名，也可手动修改；
+     bot_name 为空时不替换保持原文。
+  3. /好感度"下一阶段："字段修复：原显示当前阶段阈值，现显示
+     真正的下一阶段阈值；共生期显示"已达最高阶段"，负好感显示
+     "恢复正常关系"。基础模式也补上该字段。
+  4. 崩溃修复：调试命令（/缓存统计 /调试事件 /调试记忆 /修复互动统计
+     /清理初始用户）不再因缺少 _is_admin 崩溃；/清理初始用户接错
+     handler 修复；互动计数去重（一次触发情感更新的对话不再计 2 次）；
+     /修复互动统计 正确设置负面互动数（positive+negative=total）；
+     stability_score 不再出现 -inf；/设置态度 /设置关系 校验格式并
+     返回友好错误；写命令后缓存立即失效；/隐私级别 持久化落盘；
+     cache.py 移除 xxhash 裸导入（无 xxhash 环境自动降级 hashlib）。
+  5. 缓存安全：全局心情只改用户可见显示层 + 独立全局持久化，
+     不触碰 inject_enhanced_context 的注入结构，缓存命中率不受影响。
 
 
   v4.0.5 修复内容（by foorgange）：
