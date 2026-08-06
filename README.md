@@ -4,7 +4,8 @@
 
 
 
-<img width="2247" height="1332" alt="屏幕截图 2026-08-06 162911" src="https://github.com/user-attachments/assets/9fb7ee1f-90d2-48db-8306-b67dbb1d9796" />
+<img width="2348" height="1217" alt="image" src="https://github.com/user-attachments/assets/52acca03-bac3-4ce4-b2dd-8b05828af21e" />
+
 
 ---
 
