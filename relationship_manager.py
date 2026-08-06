@@ -4,6 +4,19 @@ from typing import Dict, Any, Optional, Tuple
 
 from .models import EnhancedEmotionalState
 
+# 阶段顺序（用于计算"下一阶段"）
+STAGE_ORDER = ["INITIAL", "DEEPENING", "COMMITMENT", "SYMBIOSIS"]
+
+
+def _next_stage_key(stage: str) -> Optional[str]:
+    """返回给定阶段的下一阶段 key；已是最高阶段返回 None"""
+    if stage in STAGE_ORDER:
+        idx = STAGE_ORDER.index(stage)
+        if idx + 1 < len(STAGE_ORDER):
+            return STAGE_ORDER[idx + 1]
+    return None
+
+
 class DynamicWeightManager:
     """动态权重管理器 - 完整的原有实现"""
     
@@ -98,12 +111,11 @@ class DynamicWeightManager:
             raw_target = "INITIAL"
 
         # 滞后逻辑
-        stage_values = {"INITIAL": 0, "DEEPENING": 1, "COMMITMENT": 2, "SYMBIOSIS": 3}
         UP_THRESHOLD = cls.STAGE_CONFIGS[raw_target]["composite_threshold"]
         DOWN_THRESHOLD = UP_THRESHOLD - 5  # 5 点滞后带
-        
+
         # 如果比上一阶段高，用上升阈值；否则用下降阈值
-        use_threshold = UP_THRESHOLD if stage_values[raw_target] > stage_values[prev_stage] else DOWN_THRESHOLD
+        use_threshold = UP_THRESHOLD if STAGE_ORDER.index(raw_target) > STAGE_ORDER.index(prev_stage) else DOWN_THRESHOLD
 
         if composite_score < use_threshold:
             return prev_stage
@@ -221,7 +233,17 @@ class DynamicWeightManager:
         
         progress = (composite_score / stage_config["composite_threshold"]) * 100
         progress_to_next = max(0, min(100, progress))
-        
+
+        # 计算"下一阶段"信息
+        next_key = _next_stage_key(target_stage)
+        if next_key is not None:
+            next_stage_threshold = cls.STAGE_CONFIGS[next_key]["composite_threshold"]
+            next_stage_name = cls.STAGE_CONFIGS[next_key]["name"]
+        else:
+            next_stage_threshold = None
+            next_stage_name = "已达最高阶段"
+        is_max_stage = target_stage == "SYMBIOSIS"
+
         info = {
             "stage": target_stage,
             "stage_name": stage_config["name"],
@@ -229,7 +251,10 @@ class DynamicWeightManager:
             "favor_weight": favor_weight,
             "intimacy_weight": intimacy_weight,
             "composite_score": composite_score,
-            "next_stage_threshold": stage_config["composite_threshold"],
+            "current_stage_threshold": stage_config["composite_threshold"],
+            "next_stage_threshold": next_stage_threshold,
+            "next_stage_name": next_stage_name,
+            "is_max_stage": is_max_stage,
             "progress_to_next": progress_to_next,
             "is_transitioning": transition_info["is_transitioning"],
             "transition_progress": transition_info["transition_progress"],
@@ -268,7 +293,10 @@ class DynamicWeightManager:
             "favor_weight": 1.0,
             "intimacy_weight": 0.0,
             "composite_score": composite_score,
-            "next_stage_threshold": 0,
+            "current_stage_threshold": 0,
+            "next_stage_threshold": None,
+            "next_stage_name": "恢复正常关系",
+            "is_max_stage": False,
             "progress_to_next": progress,
             "is_transitioning": False,
             "transition_progress": 0.0,

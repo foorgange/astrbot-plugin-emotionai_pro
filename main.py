@@ -24,25 +24,29 @@ from .emotion_expert import EmotionAnalysisExpert
 from .command_handlers import UserCommandHandler, AdminCommandHandler, DebugCommandHandler
 from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
+from .global_mood import GlobalMood, GlobalMoodStore, apply_mood_update, MOOD_CACHE_TTL
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.0")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.6")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        
+
+        # 保留原始配置引用（供 bot_name / 隐私级别等落盘）
+        self._raw_config = config
+
         # 配置验证和初始化
         self.config = self._load_and_validate_config(config)
-        
+
         # 获取规范的数据目录
         data_dir = StarTools.get_data_dir() / "emotionai_pro"
-        
+
         # 确保目录存在
         data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 初始化存储层
         self.repository = UserStateRepository(data_dir)
         self.backup_manager = BackupManager(data_dir, self.config.backup_retention_days)
-        
+
         # 初始化各个管理器
         self.user_manager = UserStateManager(self.repository, self.config)
         self.ranking_manager = RankingManager(self.user_manager)
@@ -51,41 +55,51 @@ class EmotionAIProPlugin(Star):
         self.weight_manager = DynamicWeightManager()
         self.update_manager = SmartUpdateManager()
         self.memory_system = EnhancedMemorySystem(self.repository)
-        
+
         # 缓存系统
         self.cache = ShardedTTLCache(
             max_size=self.config.cache_max_size,
             default_ttl=self.config.cache_ttl
         )
-        
+
         # 情感分析专家 - 确保传递正确的参数
         self.emotion_expert = EmotionAnalysisExpert(
-            self.cache, 
+            self.cache,
             self.context,
             self.config.secondary_llm_provider,
-            self.config.secondary_llm_model
+            self.config.secondary_llm_model,
+            bot_name_provider=self._get_bot_name
         )
-        
+
         # 命令处理器
         self.user_commands = UserCommandHandler(self)
         self.admin_commands = AdminCommandHandler(self)
         self.debug_commands = DebugCommandHandler(self)
-        
+
         # 原有的正则表达式模式
         self.need_assessment_pattern = re.compile(r"\[需要情感评估\]")
-        
+
         # 健康检查器
         self.health_checker = None  # 延迟初始化
-        
+
+        # 全局心情（共享字段）与 bot 人设名
+        self.global_mood_store = GlobalMoodStore(data_dir)
+        self._mood_cache: Optional[GlobalMood] = None
+        self._mood_cache_time: float = 0.0
+        self._resolved_bot_name: Optional[str] = None
+        self._bot_name_resolved: bool = False
+        self._bot_name_attempted: bool = False
+
         # 智能缓存清理任务
         self.smart_cleanup_task: Optional[asyncio.Task] = None
         self._start_smart_cache_cleanup()
-        
+
         logger.info(f"EmotionAI Pro 优化版插件初始化完成")
         logger.info(f"配置: 智能更新={self.config.enable_smart_update}, 辅助LLM={self.config.enable_secondary_llm}")
         logger.info(f"性能: 缓存大小={self.config.cache_max_size}, 分片数=8")
-        
-        # 启动时预热缓存
+
+        # 启动时预热缓存 + 预载全局心情
+        asyncio.create_task(self._mood_load_once())
         asyncio.create_task(self._warmup_on_start())
     
     async def _warmup_on_start(self):
@@ -120,7 +134,8 @@ class EmotionAIProPlugin(Star):
             "emotional_significance_threshold": "emotional_significance_threshold",
             "enable_secondary_llm": "enable_secondary_llm",
             "secondary_llm_provider": "secondary_llm_provider",
-            "secondary_llm_model": "secondary_llm_model"
+            "secondary_llm_model": "secondary_llm_model",
+            "bot_name": "bot_name"
         }
         
         for raw_key, config_key in base_mapping.items():
@@ -201,6 +216,164 @@ class EmotionAIProPlugin(Star):
         except Exception as e:
             logger.error(f"获取消息文本失败: {e}")
             return ""
+
+    def _get_raw_config(self):
+        """返回原始 AstrBotConfig（供落盘持久化）"""
+        return getattr(self, '_raw_config', None)
+
+    # ==================== bot 人设名 ====================
+
+    def _extract_name_from_prompt(self, prompt: str) -> Optional[str]:
+        """从 persona 提示词第一行提取人设名
+
+        形如「# 永雏塔菲 — QQ群机器人人设提示词」提取「永雏塔菲」；
+        无法识别时返回 None。
+        """
+        if not prompt:
+            return None
+        try:
+            first_line = prompt.strip().splitlines()[0].strip()
+            # 取第一个「# 」之后的部分
+            if not first_line.startswith("#"):
+                return None
+            name_part = first_line.lstrip("#").strip()
+            # 去掉尾随人设词/分隔符（如“— QQ群机器人人设提示词”）
+            name_part = re.split(r"[—\-–]", name_part)[0].strip()
+            if not name_part or len(name_part) > 20:
+                return None
+            return name_part
+        except Exception:
+            return None
+
+    def _get_bot_name(self) -> Optional[str]:
+        """获取 bot 人设名：配置项 → 运行时解析值 → None（不替换）"""
+        configured = getattr(self.config, 'bot_name', None)
+        if configured and str(configured).strip():
+            return str(configured).strip()
+        if self._resolved_bot_name:
+            return self._resolved_bot_name
+        return None
+
+    async def _ensure_bot_name(self, event: AstrMessageEvent, req: ProviderRequest):
+        """首次启动自动从 AstrBot persona 提取 bot 人设名（幂等，仅执行一次）
+
+        仅在 config.bot_name 为空且从未解析过时执行；无论成败都只尝试一次，
+        不影响 extra_user_content_parts 的注入结构（缓存安全）。
+        """
+        if self.config.bot_name and str(self.config.bot_name).strip():
+            return
+        if self._bot_name_resolved:
+            return
+
+        self._bot_name_resolved = True  # 防止重复尝试
+        try:
+            cfg = self.context.get_config(event.unified_msg_origin)
+            cfg_provider_settings = {}
+            if cfg is not None:
+                try:
+                    cfg_provider_settings = cfg.get("provider_settings", {})
+                except Exception:
+                    cfg_provider_settings = {}
+            if not isinstance(cfg_provider_settings, dict):
+                cfg_provider_settings = {}
+
+            persona_id, persona, force_id, _webchat = self.context.persona_manager.resolve_selected_persona(
+                umo=event.unified_msg_origin,
+                conversation_persona_id=req.conversation.persona_id if req.conversation else None,
+                platform_name=event.get_platform_name(),
+                provider_settings=cfg_provider_settings,
+            )
+            if persona is None:
+                return
+
+            # persona 的 name 即 persona_id（如“永雏塔菲”）；default 则回退到提示词提取
+            if persona.get("name") and str(persona.get("name")) != "default":
+                self._resolved_bot_name = str(persona["name"]).strip()
+            else:
+                self._resolved_bot_name = self._extract_name_from_prompt(persona.get("prompt", ""))
+
+            if self._resolved_bot_name:
+                # 同步到配置并落盘，用户可后续手动修改
+                self.config.bot_name = self._resolved_bot_name
+                raw_config = self._get_raw_config()
+                if raw_config is not None:
+                    try:
+                        raw_config.update({"bot_name": self._resolved_bot_name})
+                        await raw_config.save_config_async()
+                    except Exception as e:
+                        logger.warning(f"bot_name 落盘失败: {e}")
+                logger.info(f"已自动提取 bot 人设名: {self._resolved_bot_name}")
+        except Exception as e:
+            logger.warning(f"自动提取 bot 人设名失败: {e}")
+
+    def _sanitize_ai_text(self, text: str) -> str:
+        """将用户可见描述中的独立「AI/ai」字样替换为 bot 人设名
+
+        边界用 [A-Za-z0-9] 而非 \\w：\\w 匹配中文，导致夹在汉字间的
+        “ai”（如“亲密玩闹的ai伙伴”）无法被替换——这是核心场景。
+        bot_name 为空时返回原文，不引入新“AI”。
+        """
+        if not text:
+            return text
+        bot_name = self._get_bot_name()
+        if not bot_name:
+            return text
+        return re.sub(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', bot_name, text, flags=re.IGNORECASE)
+
+    # ==================== 全局心情（共享字段） ====================
+
+    async def _mood_load_once(self):
+        """启动时预载全局心情到内存缓存"""
+        try:
+            mood = await self.global_mood_store.load()
+            self._mood_cache = mood
+            self._mood_cache_time = time.time()
+        except Exception as e:
+            logger.error(f"全局心情预载失败: {e}")
+
+    async def _mood_refresh_async(self):
+        """后台刷新全局心情（fire-and-forget）"""
+        try:
+            mood = await self.global_mood_store.load()
+            self._mood_cache = mood
+            self._mood_cache_time = time.time()
+        except Exception as e:
+            logger.warning(f"全局心情刷新失败: {e}")
+
+    def get_mood_sync(self) -> GlobalMood:
+        """同步读取全局心情（缓存优先，未命中触发后台刷新）
+
+        _format_emotional_state 是同步方法不能 await，故用内存缓存 +
+        fire-and-forget 刷新。
+        """
+        now = time.time()
+        if self._mood_cache is not None and (now - self._mood_cache_time) <= MOOD_CACHE_TTL:
+            return self._mood_cache
+        if self._mood_cache is not None:
+            # 缓存过期：后台刷新，本次先用旧值
+            asyncio.create_task(self._mood_refresh_async())
+            return self._mood_cache
+        # 未加载：先给默认值，再触发一次加载
+        asyncio.create_task(self._mood_refresh_async())
+        return GlobalMood.default()
+
+    def _update_global_mood(self, expert_updates: Dict[str, Any]):
+        """根据专家更新同步演进全局心情（仅情感维度，温和叠加）"""
+        try:
+            mood = self.get_mood_sync()
+            apply_mood_update(mood, expert_updates)
+            self._mood_cache = mood
+            self._mood_cache_time = time.time()
+            asyncio.create_task(self.global_mood_store.save(mood))
+        except Exception as e:
+            logger.warning(f"全局心情更新失败: {e}")
+
+    async def invalidate_state_cache(self, user_key: str):
+        """使插件级 state 缓存失效（写命令后调用，避免残留旧状态）"""
+        try:
+            await self.cache.delete(f"state_{user_key}")
+        except Exception as e:
+            logger.warning(f"状态缓存失效失败: {e}")
         
     def _format_emotional_state(self, state: EnhancedEmotionalState) -> str:
         """格式化情感状态显示（优化版本）"""
@@ -211,40 +384,56 @@ class EmotionAIProPlugin(Star):
         stage_info = self.weight_manager.get_stage_info(state)
         stage_advice = self.weight_manager.get_stage_progression_advice(state)
 
-        # 计算心情与强度（与 LLM 注入同一口径）
-        emotion_intensity = self._get_emotion_intensity(state)
-        dominant_emotion = self.analyzer.get_dominant_emotion(state)
+        # 心情与强度：从全局心情读取（全用户共享的 bot 心情字段）
+        mood = self.get_mood_sync()
+        emotion_intensity = mood.intensity
+        dominant_emotion = mood.dominant_emotion
         mood_label = self._get_mood_label(emotion_intensity)
 
         # 更新状态的阶段信息
         state.relationship_stage = stage_info["stage_name"]
         state.stage_composite_score = stage_info["composite_score"]
         state.stage_progress = stage_info["progress_to_next"]
-        
+
+        # 清洗描述中的独立"AI"字样为 bot 人设名
+        relationship_display = self._sanitize_ai_text(state.descriptions.relationship)
+        attitude_display = self._sanitize_ai_text(state.descriptions.attitude)
+
         # 计算复合评分
         composite_score = stage_info['composite_score']
+
+        # 下一阶段显示文本（BASIC 与 DETAILED 共用）
+        next_stage_threshold = stage_info.get('next_stage_threshold')
+        if stage_info.get('is_max_stage'):
+            next_stage_display = "已达最高阶段"
+        elif next_stage_threshold is None:
+            # 负好感等无固定阈值的情况（如"恢复正常关系"）
+            next_stage_display = stage_info.get('next_stage_name', '恢复正常关系')
+        else:
+            next_stage_display = f"{stage_info.get('next_stage_name', '')} ({next_stage_threshold}+)"
     
         if self.config.global_privacy_level == PrivacyLevel.BASIC:
             # 确保进度显示不为负数
             progress_display = max(0, stage_info['progress_to_next'])
-        
+
             base_info = (
                 "【当前情感状态】\n"
                 "====================================\n"
                 f"关系阶段：{stage_info['stage_name']} ({progress_display:.1f}%)\n"
                 f"复合评分：{composite_score:.1f}\n"
                 f"心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100\n"
-                f"关系：{state.descriptions.relationship}\n"
-                f"态度：{state.descriptions.attitude}"
+                f"下一阶段：{next_stage_display}\n"
+                f"关系：{relationship_display}\n"
+                f"态度：{attitude_display}"
             )
-        
+
             # 添加过渡状态提示
             if stage_info['is_transitioning']:
                 if stage_info['intimacy_boost_active']:
                     base_info += f"\n过渡期: 需要提升亲密度 {stage_info['needed_intimacy_boost']}点"
                 else:
                     base_info += f"\n过渡完成"
-            
+
             return base_info
     
         else:  # 详细显示
@@ -272,7 +461,9 @@ class EmotionAIProPlugin(Star):
                     detailed_info += f"   过渡完成\n"
             else:
                 # 使用修正后的进度
-                detailed_info += f"   阶段进度：{progress_display:.1f}% (下一阶段: {stage_info['next_stage_threshold']}+)\n"
+                detailed_info += f"   阶段进度：{progress_display:.1f}%\n"
+            # 真·下一阶段（无论是否处于过渡期都显示）
+            detailed_info += f"   下一阶段：{next_stage_display}\n"
         
             # 如果是负好感，显示特殊的权重信息
             if state.favor < 0:
@@ -285,7 +476,7 @@ class EmotionAIProPlugin(Star):
                 f"{weight_info}"
                 f"   复合评分：{stage_info['composite_score']:.1f}\n\n"
                 f"核心状态\n"
-                f"   关系：{state.descriptions.relationship} | 态度：{state.descriptions.attitude}\n"
+                f"   关系：{relationship_display} | 态度：{attitude_display}\n"
                 f"   好感度：{state.favor} | 亲密度：{state.intimacy}\n"
                 f"   心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100 | 趋势：{profile['relationship_trend']}\n\n"
                 f"互动统计\n"
@@ -339,6 +530,9 @@ class EmotionAIProPlugin(Star):
         末尾新增的一小段会变化，缓存命中率可恢复至 80%+。
         """
         user_key = self._get_user_key(event)
+
+        # 首次启动自动提取 bot 人设名（幂等，仅执行一次，不改注入结构）
+        await self._ensure_bot_name(event, req)
 
         # 从缓存获取状态或从管理器获取
         state = await self.cache.get(f"state_{user_key}")
@@ -472,6 +666,7 @@ class EmotionAIProPlugin(Star):
 
         logger.info(f"[DEBUG] 是否需要更新: {needs_update}, 原因: {update_reason}")
 
+        expert_updates = None  # 供全局心情演进使用（无更新时为 None）
         if needs_update:
             logger.info(f"情感更新触发: {update_reason}")
         
@@ -502,8 +697,9 @@ class EmotionAIProPlugin(Star):
             except Exception as e:
                 logger.error(f"情感更新处理失败: {e}")
 
-        # 更新互动统计（无论是否情感更新）
-        self._update_interaction_stats(state)
+        # 全局心情演进：仅当本次对话产生了情感更新时，将各维度变化温和汇总到共享心情
+        if needs_update and expert_updates:
+            self._update_global_mood(expert_updates)
 
         logger.info(f"[DEBUG] 更新后状态 - 好感:{state.favor}, 亲密:{state.intimacy}")
         logger.info(f"[DEBUG] 更新后态度: '{state.descriptions.attitude}', 关系: '{state.descriptions.relationship}'")
@@ -516,6 +712,7 @@ class EmotionAIProPlugin(Star):
         # 根据用户设置和全局隐私级别显示状态
         if state.show_status and needs_update and self.config.global_privacy_level > PrivacyLevel.FULL_SECRET:
             status_text = self._format_emotional_state(state)
+            status_text = self._sanitize_ai_text(status_text)
             resp.completion_text += f"\n\n{status_text}"
 
     def _apply_expert_updates(self, state: EnhancedEmotionalState, updates: Dict[str, Any]):
@@ -567,14 +764,16 @@ class EmotionAIProPlugin(Star):
         llm_available = updates.get('llm_available', True)
     
         if source == 'llm_analysis' and llm_available:
-            # 只有来自真实LLM的分析才更新文本描述
+            # 只有来自真实LLM的分析才更新文本描述（写入前清洗独立"AI"字样）
             if 'attitude_text' in updates and updates['attitude_text']:
-                state.descriptions.update_attitude(updates['attitude_text'])
-                logger.info(f"更新态度描述: '{updates['attitude_text']}'")
+                clean_attitude = self._sanitize_ai_text(updates['attitude_text'])
+                state.descriptions.update_attitude(clean_attitude)
+                logger.info(f"更新态度描述: '{clean_attitude}'")
 
             if 'relationship_text' in updates and updates['relationship_text']:
-                state.descriptions.update_relationship(updates['relationship_text'])
-                logger.info(f"更新关系描述: '{updates['relationship_text']}'")
+                clean_relationship = self._sanitize_ai_text(updates['relationship_text'])
+                state.descriptions.update_relationship(clean_relationship)
+                logger.info(f"更新关系描述: '{clean_relationship}'")
             
         elif source == 'emergency_fallback':
             # 紧急后备只记录建议，不直接更新
@@ -589,10 +788,6 @@ class EmotionAIProPlugin(Star):
             # 紧急后备时只进行极小幅度的数值更新
             logger.info("LLM不可用，使用紧急后备方案，仅更新数值")
             
-    def _update_interaction_stats(self, state: EnhancedEmotionalState):
-        """更新互动统计"""
-        state.stats.record_interaction(is_positive=True)  # 默认记录为互动
-    
     def _calculate_emotional_significance(self, updates: Dict[str, Any]) -> int:
         """计算情感意义分数"""
         significance = 0
@@ -741,7 +936,7 @@ class EmotionAIProPlugin(Star):
     @filter.command("清理初始用户", priority=5)
     async def admin_cleanup_initial_users(self, event: AstrMessageEvent):
         """手动清理初始状态用户缓存"""
-        async for result in self.admin_commands.cleanup_initial_users(event):
+        async for result in self.debug_commands.cleanup_initial_users(event):
             yield result
 
     def _start_smart_cache_cleanup(self):
@@ -777,7 +972,11 @@ class EmotionAIProPlugin(Star):
             # 关闭所有管理器
             await self.user_manager.close()
             await self.cache.close()
-            
+
+            # 关闭全局心情存储
+            if hasattr(self, 'global_mood_store'):
+                await self.global_mood_store.close()
+
             # 保存记忆数据
             await self.memory_system._save_long_term_memory()
             

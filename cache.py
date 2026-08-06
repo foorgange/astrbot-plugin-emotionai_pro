@@ -4,7 +4,6 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from collections import OrderedDict
 import hashlib
-import xxhash  # 添加更快的哈希库
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 import sys

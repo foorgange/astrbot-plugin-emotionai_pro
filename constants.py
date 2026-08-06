@@ -36,5 +36,6 @@ class UpdateThresholds:
 class PathConstants:
     USER_DATA_FILE = "user_emotion_data.json"
     LONG_TERM_MEMORY_FILE = "long_term_memory.json"
+    GLOBAL_MOOD_FILE = "global_mood.json"
     BACKUP_DIR = "backups"
     TEMP_DIR = "temp"

@@ -1,6 +1,7 @@
 # managers.py
 import time
 import asyncio
+import math
 from typing import Dict, Any, Optional, List, Set, Tuple, Deque
 from pathlib import Path
 from collections import defaultdict, deque
@@ -823,8 +824,13 @@ class EmotionAnalyzer:
         
         # 计算稳定性得分
         interaction_stats = state.stats.get_summary()
-        stability_score = min(100, interaction_stats['positive_ratio'] * 0.8 + 
-                            (100 - interaction_stats['days_since_last']) * 0.2)
+        days_since_last = interaction_stats['days_since_last']
+        # days_since_last 可能为 inf（从未互动），clamp 到 365 天，避免 100-inf 出现 -inf
+        if not math.isfinite(days_since_last):
+            days_since_last = 365
+        stability_score = max(0.0, min(100.0,
+            interaction_stats['positive_ratio'] * 0.8 +
+            (100 - days_since_last) * 0.2))
         
         return {
             "dominant_emotion": dominant_emotion,

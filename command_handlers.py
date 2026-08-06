@@ -14,11 +14,19 @@ from .config import PluginConfig, PrivacyLevel
 
 class BaseCommandHandler:
     """基础命令处理器"""
-    
+
     def __init__(self, plugin):
         self.plugin = plugin
         self.config = plugin.config
         self.user_manager = plugin.user_manager
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """检查管理员权限"""
+        return event.role == "admin" or event.get_sender_id() in self.config.admin_qq_list
+
+    def _resolve_user_key(self, user_input: str) -> str:
+        """解析用户标识符"""
+        return self.user_manager.resolve_user_key(user_input, self.config.session_based)
 
 class UserCommandHandler(BaseCommandHandler):
     """用户命令处理器"""
@@ -140,7 +148,7 @@ class UserCommandHandler(BaseCommandHandler):
             f"当前阶段：{stage_info['stage_name']}",
             f"阶段描述：{stage_info['description']}",
             f"动态权重：好感度 {stage_info['favor_weight']*100:.0f}% | 亲密度 {stage_info['intimacy_weight']*100:.0f}%",
-            f"复合评分：{stage_info['composite_score']:.1f} / {stage_info['next_stage_threshold']}",
+            f"复合评分：{stage_info['composite_score']:.1f} / {stage_info['current_stage_threshold']}",
             f"阶段进度：{stage_info['progress_to_next']:.1f}%",
         ]
         
@@ -178,15 +186,7 @@ class AdminCommandHandler(BaseCommandHandler):
         self.ranking_manager = plugin.ranking_manager
         self.weight_manager = plugin.weight_manager
         self.analyzer = plugin.analyzer
-    
-    def _is_admin(self, event: AstrMessageEvent) -> bool:
-        """检查管理员权限"""
-        return event.role == "admin" or event.get_sender_id() in self.config.admin_qq_list
-    
-    def _resolve_user_key(self, user_input: str) -> str:
-        """解析用户标识符"""
-        return self.user_manager.resolve_user_key(user_input, self.config.session_based)
-    
+
     async def set_favor(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
         """设置好感度"""
         if not self._is_admin(event):
@@ -212,12 +212,13 @@ class AdminCommandHandler(BaseCommandHandler):
             
         # 解析用户标识符
         user_key = self._resolve_user_key(user_input)
-        
+
         state = await self.user_manager.get_user_state(user_key)
         state.favor = favor_value
-        
+
         await self.user_manager.update_user_state(user_key, state)
-        
+        await self.plugin.invalidate_state_cache(user_key)
+
         mode_info = "（会话模式）" if self.config.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的好感度已设置为 {favor_value}")
         event.stop_event()
@@ -247,12 +248,13 @@ class AdminCommandHandler(BaseCommandHandler):
             
         # 解析用户标识符
         user_key = self._resolve_user_key(user_input)
-        
+
         state = await self.user_manager.get_user_state(user_key)
         state.intimacy = intimacy_value
-        
+
         await self.user_manager.update_user_state(user_key, state)
-        
+        await self.plugin.invalidate_state_cache(user_key)
+
         mode_info = "（会话模式）" if self.config.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的亲密度已设置为 {intimacy_value}")
         event.stop_event()
@@ -271,12 +273,18 @@ class AdminCommandHandler(BaseCommandHandler):
             
         # 解析用户标识符
         user_key = self._resolve_user_key(user_input)
-        
+
         state = await self.user_manager.get_user_state(user_key)
-        state.descriptions.attitude = attitude
-        
+        try:
+            state.descriptions.update_attitude(attitude)
+        except ValueError as e:
+            yield event.plain_result(f"【错误】无效的态度描述格式：{e}")
+            event.stop_event()
+            return
+
         await self.user_manager.update_user_state(user_key, state)
-        
+        await self.plugin.invalidate_state_cache(user_key)
+
         mode_info = "（会话模式）" if self.config.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的态度已设置为 {attitude}")
         event.stop_event()
@@ -295,12 +303,18 @@ class AdminCommandHandler(BaseCommandHandler):
             
         # 解析用户标识符
         user_key = self._resolve_user_key(user_input)
-        
+
         state = await self.user_manager.get_user_state(user_key)
-        state.descriptions.relationship = relationship
-        
+        try:
+            state.descriptions.update_relationship(relationship)
+        except ValueError as e:
+            yield event.plain_result(f"【错误】无效的关系描述格式：{e}")
+            event.stop_event()
+            return
+
         await self.user_manager.update_user_state(user_key, state)
-        
+        await self.plugin.invalidate_state_cache(user_key)
+
         mode_info = "（会话模式）" if self.config.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的关系已设置为 {relationship}")
         event.stop_event()
@@ -324,7 +338,16 @@ class AdminCommandHandler(BaseCommandHandler):
         # 更新全局配置
         self.config.global_privacy_level = PrivacyLevel(privacy_level)
         level_names = {0: "完全保密", 1: "基础显示", 2: "详细显示"}
-        
+
+        # 落盘持久化（避免重启后丢失）
+        try:
+            raw_config = self.plugin._get_raw_config()
+            if raw_config is not None:
+                raw_config.update({"global_privacy_level": privacy_level})
+                await raw_config.save_config_async()
+        except Exception as e:
+            print(f"隐私级别配置落盘失败: {e}")
+
         print(f"管理员更新全局隐私级别: {level_names[privacy_level]}")
         yield event.plain_result(f"【全局设置】隐私级别已设置为: {level_names[privacy_level]}（全员生效）")
         event.stop_event()
@@ -344,9 +367,10 @@ class AdminCommandHandler(BaseCommandHandler):
         # 解析用户标识符
         user_key = self._resolve_user_key(user_input)
         new_state = EnhancedEmotionalState(user_key=user_key)
-        
+
         await self.user_manager.update_user_state(user_key, new_state)
-        
+        await self.plugin.invalidate_state_cache(user_key)
+
         mode_info = "（会话模式）" if self.config.session_based else ""
         yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的情感状态已完全重置")
         event.stop_event()
@@ -371,14 +395,18 @@ class AdminCommandHandler(BaseCommandHandler):
         stage_info = self.weight_manager.get_stage_info(state)
         profile = self.analyzer.get_emotional_profile(state, stage_info['favor_weight'], stage_info['intimacy_weight'])
 
-        # 情感强度统一归一化到 0-100（profile['emotion_intensity'] 是 8 维原始和 0-800）
-        normalized_intensity = min(100, sum([
-            state.emotions.joy, state.emotions.trust, state.emotions.fear, state.emotions.surprise,
-            state.emotions.sadness, state.emotions.disgust, state.emotions.anger, state.emotions.anticipation
-        ]) // 2)
+        # 心情/强度：统一从全局心情读取（与 /好感度 同一口径，全用户共享）
+        mood = self.plugin.get_mood_sync()
+        global_dominant = mood.dominant_emotion
+        global_intensity = mood.intensity
 
         # 格式化显示名称
         display_name = self.ranking_manager._format_user_display(user_input)
+
+        # 清洗描述中的独立"AI"字样为 bot 人设名
+        sanitize = self.plugin._sanitize_ai_text
+        attitude_display = sanitize(state.descriptions.attitude)
+        relationship_display = sanitize(state.descriptions.relationship)
 
         response_lines = [
             f"【用户 {display_name} 完整情感状态】",
@@ -386,10 +414,10 @@ class AdminCommandHandler(BaseCommandHandler):
             "==================",
             f"关系阶段: {stage_info['stage_name']} (进度: {stage_info['progress_to_next']:.1f}%)",
             f"动态权重: 好感{stage_info['favor_weight']*100:.0f}% | 亲密{stage_info['intimacy_weight']*100:.0f}%",
-            f"态度: {state.descriptions.attitude} | 关系: {state.descriptions.relationship}",
+            f"态度: {attitude_display} | 关系: {relationship_display}",
             f"好感度: {state.favor} | 亲密度: {state.intimacy}",
             f"复合评分: {profile['composite_score']:.1f}",
-            f"主导情感: {profile['dominant_emotion']} | 情感强度: {normalized_intensity}%",
+            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity)}) | 强度: {global_intensity}/100",
             f"互动统计: {state.stats.total_count}次 (正面: {state.stats.positive_count}, 负面: {state.stats.negative_count})",
             f"最后互动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
             f"状态显示: {'开启' if state.show_status else '关闭'}",
@@ -454,6 +482,10 @@ class DebugCommandHandler(BaseCommandHandler):
     
     async def show_cache_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """显示缓存统计信息 - 增强版本"""
+        if not self._is_admin(event):
+            yield event.plain_result("【错误】需要管理员权限")
+            event.stop_event()
+            return
         try:
             stats = await self.user_manager.cache.get_stats()
             
@@ -599,12 +631,14 @@ class DebugCommandHandler(BaseCommandHandler):
             # 假设大部分互动都是正面的（因为好感度和亲密度在增长）
             estimated_positive = max(1, int(state.stats.total_count * 0.8))  # 80% 估算为正面
             state.stats.positive_count = min(estimated_positive, state.stats.total_count)
-        
+            # 负面互动 = 总数 - 正面（并确保非负，避免估算溢出导致负数）
+            state.stats.negative_count = max(0, state.stats.total_count - state.stats.positive_count)
+
             # 计算正面互动比例
             positive_ratio = state.stats.positive_ratio
-        
+
             await self.user_manager.update_user_state(user_key, state)
-        
+
             yield event.plain_result(f"【成功】修复互动统计：正面互动 {state.stats.positive_count}/{state.stats.total_count} ({positive_ratio:.1f}%)")
         else:
             yield event.plain_result("【信息】暂无互动数据需要修复")

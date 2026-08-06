@@ -41,6 +41,7 @@ class PluginConfig(BaseModel):
     enable_secondary_llm: bool = Field(default=True, description="启用辅助LLM进行情感分析")
     secondary_llm_provider: Optional[str] = Field(default=None, description="辅助LLM提供商")
     secondary_llm_model: Optional[str] = Field(default=None, description="辅助LLM模型名称")
+    bot_name: Optional[str] = Field(default=None, description="机器人人设名称，留空则首次启动自动从 AstrBot persona 提取")
     
     # 性能配置
     cache_ttl: int = Field(default=300, description="缓存默认TTL(秒)")

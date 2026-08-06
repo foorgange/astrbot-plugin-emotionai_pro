@@ -14,12 +14,14 @@ from .constants import TimeConstants
 class EmotionAnalysisExpert:
     """情感分析专家 - 完全修复版本"""
 
-    def __init__(self, cache: ShardedTTLCache, context=None, 
-                 secondary_llm_provider: str = None, secondary_llm_model: str = None):
+    def __init__(self, cache: ShardedTTLCache, context=None,
+                 secondary_llm_provider: str = None, secondary_llm_model: str = None,
+                 bot_name_provider=None):
         self.cache = cache
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
         self.secondary_llm_model = secondary_llm_model
+        self.bot_name_provider = bot_name_provider
         self.llm_timeout = 30.0
         self.llm_retry_count = 3
         self.llm_retry_delay = 1.0
@@ -364,11 +366,13 @@ class EmotionAnalysisExpert:
 
     def _build_emotion_analysis_prompt(self, user_msg: str, bot_msg: str, state: EnhancedEmotionalState) -> str:
         """构建生动的情感分析提示词"""
+        # 使用 bot 人设名代替"AI"字样（未解析到时兜底"AI"，写入/显示层会再次清洗）
+        bot_name = (self.bot_name_provider() if self.bot_name_provider else "AI") or "AI"
         return f"""你是一个情感分析专家，请分析以下对话的情感变化，输出JSON格式的分析结果。
 
 对话内容：
 用户：「{user_msg}」
-AI：「{bot_msg}」
+{bot_name}：「{bot_msg}」
 
 当前用户情感状态：
 - 好感度：{state.favor}（范围：-100到100）
@@ -394,11 +398,13 @@ AI：「{bot_msg}」
 - 考虑当前好感度、亲密度和互动历史
 - 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
 - 保持自然、符合人类社交常识
+- 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样
 
 【态度描述要求】
-- 用不超过 20 个字描述AI对用户的回应态度或互动方式
+- 用不超过 20 个字描述 {bot_name} 对用户的回应态度或互动方式
 - 体现情感倾向和互动风格
 - 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
+- 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样
 
 【输出格式】
 请输出严格的JSON格式：
