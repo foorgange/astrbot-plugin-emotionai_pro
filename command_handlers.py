@@ -370,10 +370,16 @@ class AdminCommandHandler(BaseCommandHandler):
         # 使用动态权重计算情感档案
         stage_info = self.weight_manager.get_stage_info(state)
         profile = self.analyzer.get_emotional_profile(state, stage_info['favor_weight'], stage_info['intimacy_weight'])
-        
+
+        # 情感强度统一归一化到 0-100（profile['emotion_intensity'] 是 8 维原始和 0-800）
+        normalized_intensity = min(100, sum([
+            state.emotions.joy, state.emotions.trust, state.emotions.fear, state.emotions.surprise,
+            state.emotions.sadness, state.emotions.disgust, state.emotions.anger, state.emotions.anticipation
+        ]) // 2)
+
         # 格式化显示名称
         display_name = self.ranking_manager._format_user_display(user_input)
-        
+
         response_lines = [
             f"【用户 {display_name} 完整情感状态】",
             f"用户标识: {user_key}",
@@ -383,7 +389,7 @@ class AdminCommandHandler(BaseCommandHandler):
             f"态度: {state.descriptions.attitude} | 关系: {state.descriptions.relationship}",
             f"好感度: {state.favor} | 亲密度: {state.intimacy}",
             f"复合评分: {profile['composite_score']:.1f}",
-            f"主导情感: {profile['dominant_emotion']} | 情感强度: {profile['emotion_intensity']}%",
+            f"主导情感: {profile['dominant_emotion']} | 情感强度: {normalized_intensity}%",
             f"互动统计: {state.stats.total_count}次 (正面: {state.stats.positive_count}, 负面: {state.stats.negative_count})",
             f"最后互动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
             f"状态显示: {'开启' if state.show_status else '关闭'}",

@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.4
+version: v4.0.5
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -14,6 +14,16 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.5 修复内容（by foorgange）：
+
+  1. /好感度 命令新增「心情 + 强度」实时显示：心情取 8 维情绪
+     模型的主导情感，强度归一化到 0-100 并附中文心情描述，
+     与 LLM 注入上下文同一口径。
+  2. 管理员 /查看好感 的情感强度显示修复：原误用 8 维原始和
+     (0-800) 并标注 %，会显示 300% 等错误值，现归一化到 0-100。
+  3. 不触碰 LLM 请求注入路径，缓存命中率不受影响。
 
 
   v4.0.4 修复内容（by foorgange）：

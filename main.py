@@ -210,7 +210,12 @@ class EmotionAIProPlugin(Star):
         # 获取阶段信息
         stage_info = self.weight_manager.get_stage_info(state)
         stage_advice = self.weight_manager.get_stage_progression_advice(state)
-    
+
+        # 计算心情与强度（与 LLM 注入同一口径）
+        emotion_intensity = self._get_emotion_intensity(state)
+        dominant_emotion = self.analyzer.get_dominant_emotion(state)
+        mood_label = self._get_mood_label(emotion_intensity)
+
         # 更新状态的阶段信息
         state.relationship_stage = stage_info["stage_name"]
         state.stage_composite_score = stage_info["composite_score"]
@@ -228,6 +233,7 @@ class EmotionAIProPlugin(Star):
                 "====================================\n"
                 f"关系阶段：{stage_info['stage_name']} ({progress_display:.1f}%)\n"
                 f"复合评分：{composite_score:.1f}\n"
+                f"心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100\n"
                 f"关系：{state.descriptions.relationship}\n"
                 f"态度：{state.descriptions.attitude}"
             )
@@ -254,7 +260,7 @@ class EmotionAIProPlugin(Star):
                 f"关系阶段：{stage_info['stage_name']}\n"
                 f"   {stage_info['description']}\n"
             )
-        
+
             # 添加过渡状态信息
             if stage_info['is_transitioning']:
                 if stage_info['intimacy_boost_active']:
@@ -281,7 +287,7 @@ class EmotionAIProPlugin(Star):
                 f"核心状态\n"
                 f"   关系：{state.descriptions.relationship} | 态度：{state.descriptions.attitude}\n"
                 f"   好感度：{state.favor} | 亲密度：{state.intimacy}\n"
-                f"   主导情感：{profile['dominant_emotion']} | 趋势：{profile['relationship_trend']}\n\n"
+                f"   心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100 | 趋势：{profile['relationship_trend']}\n\n"
                 f"互动统计\n"
                 f"   次数：{state.stats.total_count}次 ({frequency})\n"
                 f"   正面互动：{state.stats.positive_ratio:.1f}%\n\n"
@@ -404,6 +410,19 @@ class EmotionAIProPlugin(Star):
             state.emotions.sadness, state.emotions.disgust, state.emotions.anger, state.emotions.anticipation
         ]
         return min(100, sum(emotions) // 2)
+
+    def _get_mood_label(self, intensity: int) -> str:
+        """根据情感强度映射中文心情描述"""
+        if intensity < 15:
+            return "心情平静"
+        elif intensity < 35:
+            return "心情平稳"
+        elif intensity < 55:
+            return "心情微动"
+        elif intensity < 75:
+            return "心情波动"
+        else:
+            return "情绪高涨"
     
     @filter.on_llm_response(priority=100000)
     async def process_smart_update(self, event: AstrMessageEvent, resp: LLMResponse):

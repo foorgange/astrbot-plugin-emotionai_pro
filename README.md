@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.4
+# EmotionAI Pro - 融合版情感智能插件 v4.0.5
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -9,6 +9,17 @@
 ---
 
 ## 📝 更新日志
+
+### v4.0.5（心情强度显示）
+
+**「好感度」命令现在实时显示 bot 当前心情与强度**
+
+1. `/好感度` 命令（及对话后的状态显示）新增「心情 + 强度」行：心情来自 8 维情绪模型的主导情感（如喜悦/愤怒/复合），强度归一化到 0-100，并附中文心情描述（心情平静/平稳/微动/波动/情绪高涨）。
+2. 管理员 `/查看好感` 命令的情感强度显示修复：原先误用 8 维情绪原始和（0-800）并标注 `%`，会出现「情感强度: 300%」这类错误值，现已归一化到 0-100。
+3. 强度口径与 LLM 注入上下文一致（`_get_emotion_intensity`），显示与 AI 语气完全同步。
+4. 不涉及 LLM 请求注入路径，缓存命中率不受影响（仍在 `extra_user_content_parts` 之后）。
+
+**涉及文件**：`main.py`、`command_handlers.py`
 
 ### v4.0.4（态度描述修复）
 
