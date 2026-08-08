@@ -24,9 +24,12 @@ from .emotion_expert import EmotionAnalysisExpert
 from .command_handlers import UserCommandHandler, AdminCommandHandler, DebugCommandHandler
 from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
-from .global_mood import GlobalMood, GlobalMoodStore, apply_mood_update, MOOD_CACHE_TTL
+from .global_mood import (
+    GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
+    MOOD_CACHE_TTL,
+)
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.6")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.7")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -421,7 +424,7 @@ class EmotionAIProPlugin(Star):
                 "====================================\n"
                 f"关系阶段：{stage_info['stage_name']} ({progress_display:.1f}%)\n"
                 f"复合评分：{composite_score:.1f}\n"
-                f"心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100\n"
+                f"心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity:.2f}/1\n"
                 f"下一阶段：{next_stage_display}\n"
                 f"关系：{relationship_display}\n"
                 f"态度：{attitude_display}"
@@ -478,7 +481,7 @@ class EmotionAIProPlugin(Star):
                 f"核心状态\n"
                 f"   关系：{relationship_display} | 态度：{attitude_display}\n"
                 f"   好感度：{state.favor} | 亲密度：{state.intimacy}\n"
-                f"   心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity}/100 | 趋势：{profile['relationship_trend']}\n\n"
+                f"   心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity:.2f}/1 | 趋势：{profile['relationship_trend']}\n\n"
                 f"互动统计\n"
                 f"   次数：{state.stats.total_count}次 ({frequency})\n"
                 f"   正面互动：{state.stats.positive_ratio:.1f}%\n\n"
@@ -565,7 +568,7 @@ class EmotionAIProPlugin(Star):
 
 【当前情感状态】
 主导情感：{self.analyzer.get_dominant_emotion(state)}
-情感强度：{self._get_emotion_intensity(state)}/100
+情感强度：{self._get_emotion_intensity(state)}/1
 关系阶段：{state.relationship_stage}
 态度倾向：{state.descriptions.attitude}
 好感度：{state.favor} | 亲密度：{state.intimacy}
@@ -597,23 +600,23 @@ class EmotionAIProPlugin(Star):
 记住：专注于生成优质的对话内容，情感更新由专门系统处理。
 """
     
-    def _get_emotion_intensity(self, state: EnhancedEmotionalState) -> int:
-        """计算情感强度"""
+    def _get_emotion_intensity(self, state: EnhancedEmotionalState) -> float:
+        """计算情感强度（0~1）"""
         emotions = [
             state.emotions.joy, state.emotions.trust, state.emotions.fear, state.emotions.surprise,
             state.emotions.sadness, state.emotions.disgust, state.emotions.anger, state.emotions.anticipation
         ]
-        return min(100, sum(emotions) // 2)
+        return round(max(emotions) / 100.0, 2) if emotions else 0.0
 
-    def _get_mood_label(self, intensity: int) -> str:
-        """根据情感强度映射中文心情描述"""
-        if intensity < 15:
+    def _get_mood_label(self, intensity: float) -> str:
+        """根据情感强度（0~1）映射中文心情描述"""
+        if intensity < 0.15:
             return "心情平静"
-        elif intensity < 35:
+        elif intensity < 0.35:
             return "心情平稳"
-        elif intensity < 55:
+        elif intensity < 0.55:
             return "心情微动"
-        elif intensity < 75:
+        elif intensity < 0.75:
             return "心情波动"
         else:
             return "情绪高涨"
@@ -697,7 +700,12 @@ class EmotionAIProPlugin(Star):
             except Exception as e:
                 logger.error(f"情感更新处理失败: {e}")
 
-        # 全局心情演进：仅当本次对话产生了情感更新时，将各维度变化温和汇总到共享心情
+        # 全局心情演进：bot 的心情随每条对话实时变化
+        # 1) 轻量信号（关键词/语气/颜文字）——每条对话都执行，实时响应他人话语
+        # 2) 若本次产生了专家更新，再叠加各维度变化
+        mood_signal = compute_mood_signal(user_message)
+        if mood_signal:
+            self._update_global_mood(mood_signal)
         if needs_update and expert_updates:
             self._update_global_mood(expert_updates)
 

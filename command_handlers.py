@@ -417,7 +417,7 @@ class AdminCommandHandler(BaseCommandHandler):
             f"态度: {attitude_display} | 关系: {relationship_display}",
             f"好感度: {state.favor} | 亲密度: {state.intimacy}",
             f"复合评分: {profile['composite_score']:.1f}",
-            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity)}) | 强度: {global_intensity}/100",
+            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity)}) | 强度: {global_intensity:.2f}/1",
             f"互动统计: {state.stats.total_count}次 (正面: {state.stats.positive_count}, 负面: {state.stats.negative_count})",
             f"最后互动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
             f"状态显示: {'开启' if state.show_status else '关闭'}",

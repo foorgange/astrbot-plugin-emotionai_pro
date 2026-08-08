@@ -118,7 +118,8 @@ class TestFormatEmotionalState(unittest.TestCase):
         state = EnhancedEmotionalState(user_key="u1", favor=20, intimacy=10)
         text = plugin._format_emotional_state(state)
         self.assertIn("喜悦", text)  # 全局心情主导情感
-        self.assertIn("心情微动", text)  # intensity=50 → 心情微动
+        self.assertIn("情绪高涨", text)  # joy=100 → 强度 1.00 → 情绪高涨
+        self.assertIn("1.00/1", text)  # 强度 0~1 口径
 
     def test_ai_sanitized_in_output(self):
         """描述中的 AI 被替换为 bot 人设名"""
