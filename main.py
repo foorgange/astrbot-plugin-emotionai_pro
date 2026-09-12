@@ -29,7 +29,11 @@ from .global_mood import (
     MOOD_CACHE_TTL,
 )
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.8.1")
+# 独立的「AI/ai」字样（前后非字母数字）：预编译避免每次调用重复解析
+# 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
+_AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECASE)
+
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.9")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -321,7 +325,7 @@ class EmotionAIProPlugin(Star):
         bot_name = self._get_bot_name()
         if not bot_name:
             return text
-        return re.sub(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', bot_name, text, flags=re.IGNORECASE)
+        return _AI_STANDALONE_RE.sub(bot_name, text)
 
     # ==================== 全局心情（共享字段） ====================
 

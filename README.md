@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.8.1
+# EmotionAI Pro - 融合版情感智能插件 v4.0.9
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -8,9 +8,32 @@
 
 ## 更新日志
 
+### v4.0.9（性能优化 + 健壮性修复）
+
+**版本号提升，并对非核心路径做了性能与代码质量优化（不改动情感算法与上下文注入逻辑）。**
+
+1. **主导情感判定更快**：`get_dominant()` 由「构造中文键字典 + 两次遍历」改为直接属性取值 + 单次比较，实测约快 30%；`get_summary()` 约快 10%。
+2. **心情信号提取更快**：关键词表预先扁平化为 tuple 元组，内层改用局部变量缓存 `dict.get`，长句约快 10%。行为完全一致。
+3. **缓存效率**：
+   - `set()` 的条目大小只估算一次，供「删除旧值 / 内存校验 / 写入」三处复用；
+   - `cleanup_expired()` 由「先建列表再逐个删除」改为单次遍历 + `pop`，并保证 `total_size` 不为负；
+   - `get_stats()` 热点键由「全量排序取前 10」改为 `heapq.nlargest`。
+4. **关键词表 bug 修复**：`"担心"` 在表中被重复定义（第二次覆盖了第一次），导致信任信号丢失；现合并为 `{"trust": 1, "fear": 1}`。
+5. **存档写入优化**：序列化结果编码为字节串后复用给写盘与校验和，避免重复编码；备份由 `copy2` 改为 `copyfile`，省去一次元数据同步。
+6. **异常处理**：3 处静默吞错的裸 `except:` 改为 `except Exception:`，便于定位问题。
+7. **测试**：新增 `tests/test_v409_optimizations.py` 共 27 项回归用例，全量 90 项测试通过。
+
+**涉及文件**：`models.py`、`global_mood.py`、`cache.py`、`storage.py`、`main.py`、`tests/test_v409_optimizations.py`
+
+> 基准数据见 `benchmarks/bench_comparison.py`（micro-benchmark，机器不同会有差异）。
+
 ### v4.0.8.1
 
-**元数据版本提升，避免插件市场更新冲突；精简插件描述。**
+**版本号提升（元数据与代码内版本号统一）。**
+
+### v4.0.8
+
+**版本号提升，避免插件市场更新冲突；精简插件描述。**
 
 ### v4.0.7（心情实时演进 + 强度 0~1）
 

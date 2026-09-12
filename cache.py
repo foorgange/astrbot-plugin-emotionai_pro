@@ -1,6 +1,7 @@
 # cache.py
 import time
 import asyncio
+import heapq
 from typing import Dict, Any, Optional, List, Tuple
 from collections import OrderedDict
 import hashlib
@@ -59,24 +60,26 @@ class LRUCacheShard:
         async with self.lock:
             current_time = time.time()
             expires_at = current_time + ttl
-            
+
+            # 只估算一次大小，供删除旧值 / 内存检查 / 写入 三处复用
+            estimated_size = self._estimate_size(key, value)
+
             # 如果键已存在，先删除旧值
             if key in self.cache:
                 old_value, _, _ = self.cache[key]
                 self._update_size(key, old_value, remove=True)
                 del self.cache[key]
-            
+
             # 检查大小限制（条目数和内存）
             if len(self.cache) >= self.max_size:
                 await self._evict_oldest()
-            
+
             # 检查内存限制
-            estimated_size = self._estimate_size(key, value)
             if self.total_size + estimated_size > self.max_memory_bytes:
                 await self._evict_by_memory()
-            
+
             self.cache[key] = (value, expires_at, current_time)
-            self._update_size(key, value, remove=False)
+            self._update_size(key, value, remove=False, estimated_size=estimated_size)
     
     def _estimate_size(self, key: str, value: Any) -> int:
         """估算对象大小"""
@@ -93,14 +96,19 @@ class LRUCacheShard:
                 size += sum(len(str(item)) for item in value) * 2
             else:
                 size += sys.getsizeof(value) if hasattr(sys, 'getsizeof') else 100
-            
+
             return max(100, size)  # 最小100字节
-        except:
+        except Exception:
             return 1000  # 默认1KB
-    
-    def _update_size(self, key: str, value: Any, remove: bool = False):
-        """更新大小跟踪"""
-        estimated_size = self._estimate_size(key, value)
+
+    def _update_size(self, key: str, value: Any, remove: bool = False,
+                     estimated_size: Optional[int] = None):
+        """更新大小跟踪
+
+        estimated_size 可传入已算好的值，避免对同一对象重复估算。
+        """
+        if estimated_size is None:
+            estimated_size = self._estimate_size(key, value)
         if remove:
             self.total_size = max(0, self.total_size - estimated_size)
         else:
@@ -147,19 +155,20 @@ class LRUCacheShard:
         """清理过期条目，返回(清理数量, 释放字节)"""
         async with self.lock:
             current_time = time.time()
-            expired_keys = []
-            
-            for key, (value, expires_at, _) in self.cache.items():
-                if current_time >= expires_at:
-                    expired_keys.append((key, value))
-            
+
+            # 单次遍历收集过期键，避免先建列表再逐个删除的二次开销
+            expired_keys = [
+                key for key, (_, expires_at, _) in self.cache.items()
+                if current_time >= expires_at
+            ]
+
             bytes_freed = 0
-            for key, value in expired_keys:
-                del self.cache[key]
+            for key in expired_keys:
+                value, _, _ = self.cache.pop(key)
                 item_size = self._estimate_size(key, value)
                 bytes_freed += item_size
-                self.total_size -= item_size
-            
+                self.total_size = max(0, self.total_size - item_size)
+
             return len(expired_keys), bytes_freed
     
     def get_stats(self) -> CacheStats:
@@ -293,8 +302,10 @@ class ShardedTTLCache:
             total_memory += memory_info['total_bytes']
             max_memory += memory_info['max_bytes']
         
-        # 分析访问模式
-        hot_keys = sorted(self._access_pattern.items(), key=lambda x: x[1], reverse=True)[:10]
+        # 分析访问模式（只取前 10 热键）
+        hot_keys = heapq.nlargest(
+            10, self._access_pattern.items(), key=lambda x: x[1]
+        )
         
         return {
             "total_entries": total_stats.total_entries,
@@ -311,13 +322,11 @@ class ShardedTTLCache:
             "hot_keys": [{"key": k, "access_count": v} for k, v in hot_keys],
             "access_pattern_size": len(self._access_pattern)
         }
-    
+
     async def _get_shard_stats(self, shard_index: int) -> Tuple[CacheStats, Dict[str, Any]]:
-        """获取分片统计和内存信息"""
+        """获取分片统计和内存信息（无 await，直接同步读取）"""
         shard = self.shards[shard_index]
-        stats = shard.get_stats()
-        memory_info = shard.get_memory_info()
-        return stats, memory_info
+        return shard.get_stats(), shard.get_memory_info()
     
     def _start_cleanup_task(self):
         """启动定期清理任务"""

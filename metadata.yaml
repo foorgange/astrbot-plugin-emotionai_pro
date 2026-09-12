@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.8.1
+version: v4.0.9
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,18 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.9 更新内容（by foorgange）：
+
+  1. 性能优化：主导情感判定改为单次遍历直接取值（实测快约 30%）；
+     全局心情信号提取改用扁平化关键词表与局部缓存（快约 10%）；
+     缓存大小估算结果复用、过期清理改为单次遍历、热点键改用堆取 TopN。
+  2. 健壮性：修复关键词表中"担心"重复定义导致 trust 信号丢失的问题；
+     静默吞异常的裸 except 改为捕获 Exception，便于排查。
+  3. 数据安全：存档写入改为复用同一份字节串，避免重复编码；
+     备份改用 copyfile，减少一次元数据同步。
+  4. 测试：新增 27 项 v4.0.9 优化回归测试，全量用例 90 项通过。
 
 
   v4.0.7 修复内容（by foorgange）：

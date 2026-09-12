@@ -68,41 +68,40 @@ class AtomicJSONStorage:
         """实际保存数据（带备份和校验和）"""
         # 确保目录存在
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 序列化数据
+
+        # 序列化数据（一次编码复用给写盘与校验和）
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
-        
+        payload = json_str.encode('utf-8')
+
         # 计算校验和
-        checksum = self._calculate_checksum(json_str)
-        
-        # 如果原文件存在，先备份
+        checksum = hashlib.md5(payload).hexdigest()
+
+        # 如果原文件存在，先备份（copyfile 比 copy2 少一次元数据同步）
         if self.file_path.exists():
             backup_path = self.file_path.with_suffix('.bak')
             try:
-                shutil.copy2(self.file_path, backup_path)
-                print(f"创建备份文件: {backup_path}")
+                shutil.copyfile(self.file_path, backup_path)
             except Exception as e:
                 print(f"备份创建失败: {e}")
-        
+
         # 先写入临时文件
         try:
-            async with aiofiles.open(self.temp_file_path, 'w', encoding='utf-8') as f:
-                await f.write(json_str)
-            
+            async with aiofiles.open(self.temp_file_path, 'wb') as f:
+                await f.write(payload)
+
             # 保存校验和
             await self._save_checksum(checksum)
-            
+
             # 原子重命名
             self.temp_file_path.replace(self.file_path)
-            print(f"成功保存数据到: {self.file_path}")
-            
+
         except Exception as e:
             # 如果失败，删除临时文件
             if self.temp_file_path.exists():
                 self.temp_file_path.unlink()
             print(f"数据保存失败: {e}")
             raise e
-    
+
     def _calculate_checksum(self, content: str) -> str:
         """计算内容的校验和"""
         return hashlib.md5(content.encode('utf-8')).hexdigest()
@@ -338,7 +337,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.0.8.1'
+            'plugin_version': '4.0.9'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'

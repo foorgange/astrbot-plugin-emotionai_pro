@@ -44,13 +44,13 @@ class GlobalMood:
         强度 = 主导情绪值 / 100（0~1）。相比旧的「总和/2」，主导值对
         情绪转移敏感：喜悦 21 被压到 6、愤怒涨到 5，强度立即变化。
         """
-        values = [
-            self.emotions.joy, self.emotions.trust, self.emotions.fear,
-            self.emotions.surprise, self.emotions.sadness, self.emotions.disgust,
-            self.emotions.anger, self.emotions.anticipation,
-        ]
-        self.intensity = round(max(values) / 100.0, 2)
-        self.dominant_emotion = self.emotions.get_dominant()
+        e = self.emotions
+        self.intensity = round(
+            max(e.joy, e.trust, e.fear, e.surprise,
+                e.sadness, e.disgust, e.anger, e.anticipation) / 100.0,
+            2,
+        )
+        self.dominant_emotion = e.get_dominant()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -242,7 +242,7 @@ _MOOD_KEYWORD_MAP: Dict[str, Dict[str, int]] = {
     "想你": {"trust": 2, "joy": 1, "anticipation": 1},
     "想念": {"trust": 2, "joy": 1},
     "关心": {"trust": 2},
-    "担心": {"trust": 1},
+    "担心": {"trust": 1, "fear": 1},
     "在乎": {"trust": 2},
     "重要": {"trust": 1},
     "宝贝": {"joy": 2, "trust": 1},
@@ -266,11 +266,16 @@ _MOOD_KEYWORD_MAP: Dict[str, Dict[str, int]] = {
     "没想到": {"surprise": 2},
     "害怕": {"fear": 2},
     "恐怖": {"fear": 2},
-    "担心": {"fear": 1},
     "期待": {"anticipation": 2},
     "希望": {"anticipation": 1},
     "加油": {"anticipation": 1, "trust": 1},
 }
+
+# 关键词表的扁平化副本：(词, ((维度, 增量), ...))——
+# 内层用 tuple 而非 dict，迭代更快且避免哈希查找
+_MOOD_KEYWORD_MAP_ITEMS = tuple(
+    (word, tuple(delta.items())) for word, delta in _MOOD_KEYWORD_MAP.items()
+)
 
 # 语气符号带来的统一信号
 _MOOD_STRONG_POSITIVE = re.compile(r"(非常|特别|极其|真的|太)(好|开心|高兴|可爱|喜欢)")
@@ -297,33 +302,31 @@ def compute_mood_signal(user_message: str) -> Dict[str, int]:
 
     text = user_message.strip()
     signals: Dict[str, int] = {}
-
-    def _add(delta: Dict[str, int]):
-        for k, v in delta.items():
-            signals[k] = signals.get(k, 0) + v
+    get = signals.get
 
     # 关键词（去重：每词命中一次）
-    for word, delta in _MOOD_KEYWORD_MAP.items():
+    for word, delta in _MOOD_KEYWORD_MAP_ITEMS:
         if word in text:
-            _add(delta)
+            for k, v in delta:
+                signals[k] = get(k, 0) + v
 
     # 语气
     if _MOOD_STRONG_POSITIVE.search(text):
-        _add({"joy": 1})
+        signals["joy"] = get("joy", 0) + 1
     if _MOOD_STRONG_NEGATIVE.search(text):
-        _add({"anger": 1})
+        signals["anger"] = get("anger", 0) + 1
     if _MOOD_EXCLAMATION.search(text):
         # 感叹号放大小情绪：负面语境加剧负面，否则视为兴奋/喜悦
-        if signals.get("anger", 0) > 0 or signals.get("sadness", 0) > 0 or signals.get("disgust", 0) > 0:
-            _add({"sadness": 1})
+        if get("anger", 0) > 0 or get("sadness", 0) > 0 or get("disgust", 0) > 0:
+            signals["sadness"] = get("sadness", 0) + 1
         else:
-            _add({"joy": 1})
+            signals["joy"] = get("joy", 0) + 1
     if _MOOD_QUESTION.search(text):
-        _add({"surprise": 1})
+        signals["surprise"] = get("surprise", 0) + 1
     if _MOOD_EMOJI_POSITIVE.search(text):
-        _add({"joy": 1})
+        signals["joy"] = get("joy", 0) + 1
     if _MOOD_EMOJI_NEGATIVE.search(text):
-        _add({"sadness": 1})
+        signals["sadness"] = get("sadness", 0) + 1
 
     if not signals:
         return {}

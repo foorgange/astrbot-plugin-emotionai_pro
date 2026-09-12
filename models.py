@@ -34,6 +34,12 @@ class EmotionalMetrics:
         'anger': '愤怒',
         'anticipation': '期待'
     }
+
+    # 8 维情感字段顺序（与 EMOTION_NAMES 的键一致，避免各处重复罗列）
+    EMOTION_FIELDS: ClassVar[tuple] = (
+        'joy', 'trust', 'fear', 'surprise',
+        'sadness', 'disgust', 'anger', 'anticipation',
+    )
     
     def __post_init__(self):
         """初始化后验证"""
@@ -41,77 +47,92 @@ class EmotionalMetrics:
     
     def _validate_emotions(self):
         """验证情感值范围"""
-        emotions = {
-            'joy': self.joy,
-            'trust': self.trust,
-            'fear': self.fear,
-            'surprise': self.surprise,
-            'sadness': self.sadness,
-            'disgust': self.disgust,
-            'anger': self.anger,
-            'anticipation': self.anticipation
-        }
-        
-        for emotion, value in emotions.items():
-            if not EmotionConstants.MIN_EMOTION <= value <= EmotionConstants.MAX_EMOTION:
+        min_v = EmotionConstants.MIN_EMOTION
+        max_v = EmotionConstants.MAX_EMOTION
+        for name, value in zip(
+            self.EMOTION_FIELDS,
+            (self.joy, self.trust, self.fear, self.surprise,
+             self.sadness, self.disgust, self.anger, self.anticipation),
+        ):
+            if not min_v <= value <= max_v:
                 raise ValueError(
-                    f"情感 {self.EMOTION_NAMES.get(emotion, emotion)} 值 {value} "
-                    f"超出范围 [{EmotionConstants.MIN_EMOTION}, {EmotionConstants.MAX_EMOTION}]"
+                    f"情感 {self.EMOTION_NAMES.get(name, name)} 值 {value} "
+                    f"超出范围 [{min_v}, {max_v}]"
                 )
     
     def apply_update(self, updates: Dict[str, int]):
         """应用情感更新"""
+        min_v = EmotionConstants.MIN_EMOTION
+        max_v = EmotionConstants.MAX_EMOTION
+        valid = self.EMOTION_NAMES  # 仅接受已知维度
+
         for emotion, change in updates.items():
-            if hasattr(self, emotion):
+            if emotion in valid:
                 current = getattr(self, emotion)
-                new_value = max(EmotionConstants.MIN_EMOTION, 
-                              min(EmotionConstants.MAX_EMOTION, current + change))
-                setattr(self, emotion, new_value)
+                setattr(self, emotion, max(min_v, min(max_v, current + change)))
             else:
                 # 记录警告但不抛出异常
                 print(f"警告: 未知的情感类型 '{emotion}'")
-        
+
         # 更新后重新验证
         self._validate_emotions()
     
     def get_dominant(self) -> str:
         """获取主导情感"""
-        emotions = {
-            "喜悦": self.joy,
-            "信任": self.trust,
-            "恐惧": self.fear,
-            "惊讶": self.surprise,
-            "悲伤": self.sadness,
-            "厌恶": self.disgust,
-            "愤怒": self.anger,
-            "期待": self.anticipation
-        }
-        
-        # 找出最高值
-        max_value = max(emotions.values())
+        # 直接属性访问（比 getattr 循环快得多），单次遍历求最大值与并列项
+        joy, trust, fear, surprise = self.joy, self.trust, self.fear, self.surprise
+        sadness, disgust, anger, anticipation = (
+            self.sadness, self.disgust, self.anger, self.anticipation
+        )
+
+        max_value = max(joy, trust, fear, surprise, sadness, disgust, anger, anticipation)
         if max_value == 0:
             return "中立"
-        
-        # 找出所有达到最高值的情感
-        dominant_emotions = [name for name, value in emotions.items() if value == max_value]
-        
-        if len(dominant_emotions) == 1:
-            return dominant_emotions[0]
-        else:
-            # 多个情感并列，返回复合描述
-            return f"复合({'+'.join(dominant_emotions)})"
+
+        names = self.EMOTION_NAMES
+        dominant = []
+        if joy == max_value:
+            dominant.append(names['joy'])
+        if trust == max_value:
+            dominant.append(names['trust'])
+        if fear == max_value:
+            dominant.append(names['fear'])
+        if surprise == max_value:
+            dominant.append(names['surprise'])
+        if sadness == max_value:
+            dominant.append(names['sadness'])
+        if disgust == max_value:
+            dominant.append(names['disgust'])
+        if anger == max_value:
+            dominant.append(names['anger'])
+        if anticipation == max_value:
+            dominant.append(names['anticipation'])
+
+        if len(dominant) == 1:
+            return dominant[0]
+        # 多个情感并列，返回复合描述
+        return "复合(" + "+".join(dominant) + ")"
+
+    def emotion_values(self) -> Dict[str, int]:
+        """返回 {字段名: 情感值} 映射（供调试/统计用，非热路径）"""
+        return {
+            name: getattr(self, name)
+            for name in self.EMOTION_FIELDS
+        }
     
     def to_dict(self) -> Dict[str, int]:
         return asdict(self)
     
     def get_summary(self) -> Dict[str, Any]:
         """获取情感摘要"""
+        joy, trust, fear, surprise = self.joy, self.trust, self.fear, self.surprise
+        sadness, disgust, anger, anticipation = (
+            self.sadness, self.disgust, self.anger, self.anticipation
+        )
         return {
             'dominant': self.get_dominant(),
-            'total_intensity': sum([self.joy, self.trust, self.fear, self.surprise,
-                                   self.sadness, self.disgust, self.anger, self.anticipation]),
-            'positive_balance': (self.joy + self.trust + self.anticipation) - 
-                               (self.fear + self.sadness + self.disgust + self.anger),
+            'total_intensity': joy + trust + fear + surprise + sadness + disgust + anger + anticipation,
+            'positive_balance': (joy + trust + anticipation) - (fear + sadness + disgust + anger),
             'details': self.to_dict()
         }
 
@@ -211,6 +232,20 @@ class TextDescriptions:
     # 注意：AI 生成的自然中文描述几乎必带标点，正则必须放行，否则会被误拒
     VALID_ATTITUDE_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5\uff0c\u3002\uff01\uff1f\u3001\uff1b\uff1a""''\u300a\u300b\u00b7]{1,50}$'
     VALID_RELATIONSHIP_PATTERN: ClassVar[str] = r'^[\w\-\s\u4e00-\u9fa5\uff0c\u3002\uff01\uff1f\u3001\uff1b\uff1a""''\u300a\u300b\u00b7]{1,80}$'
+
+    # 预编译正则，避免每次校验都重新解析模式
+    _ATTITUDE_RE: ClassVar[re.Pattern] = re.compile(VALID_ATTITUDE_PATTERN)
+    _RELATIONSHIP_RE: ClassVar[re.Pattern] = re.compile(VALID_RELATIONSHIP_PATTERN)
+
+    @classmethod
+    def is_valid_attitude(cls, text: str) -> bool:
+        """校验态度描述是否合法"""
+        return bool(cls._ATTITUDE_RE.match(text or ""))
+
+    @classmethod
+    def is_valid_relationship(cls, text: str) -> bool:
+        """校验关系描述是否合法"""
+        return bool(cls._RELATIONSHIP_RE.match(text or ""))
     
     def __post_init__(self):
         """初始化后验证"""
@@ -219,12 +254,12 @@ class TextDescriptions:
     def _validate_descriptions(self):
         """验证描述文本"""
         # 验证态度
-        if not re.match(self.VALID_ATTITUDE_PATTERN, self.attitude):
+        if not self.is_valid_attitude(self.attitude):
             self.attitude = "中立"
             print(f"修复无效的态度描述: {self.attitude}")
-        
+
         # 验证关系
-        if not re.match(self.VALID_RELATIONSHIP_PATTERN, self.relationship):
+        if not self.is_valid_relationship(self.relationship):
             self.relationship = "陌生人"
             print(f"修复无效的关系描述: {self.relationship}")
         
@@ -241,7 +276,7 @@ class TextDescriptions:
     
     def update_attitude(self, new_attitude: str):
         """更新态度描述"""
-        if re.match(self.VALID_ATTITUDE_PATTERN, new_attitude):
+        if self.is_valid_attitude(new_attitude):
             self.attitude = new_attitude
             self.last_attitude_update = time.time()
             self.update_count += 1
@@ -250,7 +285,7 @@ class TextDescriptions:
     
     def update_relationship(self, new_relationship: str):
         """更新关系描述"""
-        if re.match(self.VALID_RELATIONSHIP_PATTERN, new_relationship):
+        if self.is_valid_relationship(new_relationship):
             self.relationship = new_relationship
             self.last_relationship_update = time.time()
             self.update_count += 1
