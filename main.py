@@ -29,7 +29,7 @@ from .global_mood import (
     MOOD_CACHE_TTL,
 )
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.8")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.8.1")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
