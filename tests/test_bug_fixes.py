@@ -137,24 +137,24 @@ class TestStabilityScoreNoInf(unittest.TestCase):
 
 
 class TestVersionConsistency(unittest.TestCase):
-    """版本号统一为 4.0.7"""
+    """版本号统一为 4.0.8"""
 
     def test_init_version(self):
         init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
         src = open(init_path, encoding="utf-8").read()
-        self.assertIn('__version__ = "4.0.7"', src)
+        self.assertIn('__version__ = "4.0.8"', src)
 
     def test_main_register_version(self):
-        """@register 装饰器版本为 4.0.7"""
+        """@register 装饰器版本为 4.0.8"""
         main_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "main.py")
         src = open(main_path, encoding="utf-8").read()
-        self.assertIn('"4.0.7"', src)
+        self.assertIn('"4.0.8"', src)
         self.assertNotIn('"4.0.0"', src)
 
     def test_storage_version(self):
         import emotionai_pro.storage as storage_mod
         src = open(storage_mod.__file__, encoding="utf-8").read()
-        self.assertIn("'4.0.7'", src)
+        self.assertIn("'4.0.8'", src)
 
 
 if __name__ == "__main__":
