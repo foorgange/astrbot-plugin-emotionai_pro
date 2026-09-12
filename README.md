@@ -2,6 +2,9 @@
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
+<img width="2041" height="1410" alt="image" src="https://github.com/user-attachments/assets/fac5f6a5-fea8-452f-805b-956b5a640257" />
+
+
 <img width="2315" height="1172" alt="屏幕截图 2026-09-12 235903" src="https://github.com/user-attachments/assets/345c3888-dd4f-4d54-affa-2c4e35205ecc" />
 
 
