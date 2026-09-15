@@ -14,6 +14,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.core.agent.message import TextPart
 
 # 导入优化后的模块
+from .stream_filter import StreamingMarkerFilter
 from .config import PluginConfig, PrivacyLevel
 from .models import EnhancedEmotionalState
 from .storage import UserStateRepository, BackupManager
@@ -550,7 +551,90 @@ class EmotionAIProPlugin(Star):
         # 构建融合的情感上下文
         emotional_context = self._build_enhanced_context(state)
         req.extra_user_content_parts.append(TextPart(text=f"\n{emotional_context}"))
-        
+
+        # 流式输出净化：控制标记的过滤必须下沉到生成器层
+        # 原因：流式模式下 ResultDecorateStage 被整体跳过，
+        # on_llm_response 里对 completion_text 的过滤不会执行。
+        self._install_streaming_filter(event)
+
+    def _install_streaming_filter(self, event: AstrMessageEvent) -> None:
+        """包装本次事件的 send_streaming，在文本推送给平台前清除控制标记。
+
+        为什么必须在生成器层做：
+            流式模式下框架会整体跳过 ResultDecorateStage：
+
+                if result.result_content_type == ResultContentType.STREAMING_RESULT:
+                    return
+
+            因此 on_llm_response 与 on_decorating_result 都不会执行，
+            模型输出的 [需要情感评估] 会被原样推送到聊天窗口。
+
+        为什么需要滑动窗口：
+            标记可能被切分到相邻 chunk（如 `[需要` + `情感评估` + `]`），
+            逐块做正则替换无法命中，必须暂扣末尾的「疑似标记前缀」。
+
+        链路安全性：
+            本方法只修改传给平台适配器的 MessageChain，不触碰
+            agent_runner 内部的 completion_text，因此 on_llm_response
+            里的情感更新触发判断（search 原始标记）仍然正常工作。
+        """
+        # 同一事件可能触发多次（工具调用多轮），只包装一次
+        if event.get_extra("_emotionai_stream_filter_installed"):
+            return
+        event.set_extra("_emotionai_stream_filter_installed", True)
+
+        original_send_streaming = event.send_streaming
+
+        async def _filtered_generator(gen):
+            """把上游 MessageChain 流做增量净化后再向下游放行。"""
+            from astrbot.core.message.components import Plain
+            from astrbot.core.message.message_event_result import MessageChain
+
+            f = StreamingMarkerFilter()
+            async for chain in gen:
+                if chain is None:
+                    yield chain
+                    continue
+
+                # break / 音频 / 工具状态等控制类 chain 直接透传
+                ctype = getattr(chain, "type", None)
+                if ctype in ("break", "audio_chunk", "tool_call"):
+                    yield chain
+                    continue
+
+                comps = getattr(chain, "chain", None)
+                if not comps:
+                    yield chain
+                    continue
+
+                for comp in comps:
+                    if isinstance(comp, Plain):
+                        comp.text = f.feed(comp.text or "")
+
+                # 净化后整块变空时丢弃，避免平台发出空消息
+                if all(isinstance(c, Plain) for c in comps) and not any(
+                    getattr(c, "text", None) for c in comps
+                ):
+                    continue
+
+                yield chain
+
+            # 收尾：释放窗口内暂扣的残余内容
+            tail = f.flush()
+            if tail:
+                yield MessageChain().message(tail)
+
+        async def _patched_send_streaming(generator, use_fallback=False):
+            logger.debug("[EmotionAI] 流式净化已启用，本次输出将过滤控制标记")
+            return await original_send_streaming(
+                _filtered_generator(generator), use_fallback
+            )
+
+        try:
+            event.send_streaming = _patched_send_streaming
+        except Exception as e:
+            logger.warning(f"[EmotionAI] 无法挂载流式净化，将回退到默认行为: {e}")
+
     def _build_enhanced_context(self, state: EnhancedEmotionalState) -> str:
         """构建改进的主LLM上下文"""
     
