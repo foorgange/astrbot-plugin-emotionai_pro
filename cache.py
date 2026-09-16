@@ -207,6 +207,9 @@ class ShardedTTLCache:
         # 性能统计
         self._access_pattern: Dict[str, int] = {}
         self._pattern_limit = 1000
+
+        # 哈希降级提示只打一次（见 _warn_hash_fallback）
+        self._hash_fallback_warned = False
         
         # 定期清理任务
         self.cleanup_task: Optional[asyncio.Task] = None
@@ -215,23 +218,70 @@ class ShardedTTLCache:
         self._start_monitor_task()
     
     def _get_shard(self, key: str) -> LRUCacheShard:
-        """根据键获取对应的分片 - 使用更好的哈希分布"""
+        """根据键获取对应的分片 - 使用更好的哈希分布
+
+        哈希只用来「选哪个分片」，是加速层的内部细节。任何哈希实现的异常
+        都**不允许**抛给调用方 —— 否则一次哈希失败就会沿着 cache.get/set
+        炸穿整条 pipeline（历史问题 #1 正是如此：xxhash>=4.0 不再接受 str，
+        抛 TypeError: Strings must be encoded before hashing，把主流程打挂）。
+
+        因此这里做两级兜底：
+          1. 正常路径优先用 xxhash（更快、分布更好）
+          2. 任何异常（含 xxhash 将来再改 API）→ 退到 hashlib.md5，
+             再不行退到内置 hash；首次降级只提示一次，避免刷屏
+        """
         # 统一先编码成 bytes：
         # xxhash>=4.0 起不再接受 str，直接传字符串会抛
         # TypeError: Strings must be encoded before hashing，导致分片缓存整体不可用。
         # 在 xxhash 3.x 上 xxh64(str) 与 xxh64(bytes) 结果一致（已实测同 digest），
         # 因此本改动对所有版本都是行为等价的。
-        raw = key.encode("utf-8") if isinstance(key, str) else key
+        raw = self._to_bytes(key)
 
+        hash_value = None
         if XXHASH_AVAILABLE:
             # 使用xxhash，更快且分布更好
-            hash_value = xxhash.xxh64(raw).intdigest()
-        else:
-            # 使用Python内置哈希，但加盐避免冲突
-            hash_value = int(hashlib.md5(raw).hexdigest()[:8], 16)
+            try:
+                hash_value = xxhash.xxh64(raw).intdigest()
+            except Exception as e:
+                self._warn_hash_fallback(e)
+
+        if hash_value is None:
+            try:
+                # 使用Python内置哈希，但加盐避免冲突
+                hash_value = int(hashlib.md5(raw).hexdigest()[:8], 16)
+            except Exception as e:
+                # 极端情况（如 FIPS 模式禁用了 md5）：最后退到内置 hash，
+                # 分布差一些但绝不会让缓存变成抛异常的源头
+                self._warn_hash_fallback(e)
+                hash_value = hash(raw)
 
         shard_index = hash_value % self.shard_count
         return self.shards[shard_index]
+
+    @staticmethod
+    def _to_bytes(key) -> bytes:
+        """把任意键统一成 bytes，任何情况下都不抛异常
+
+        正常情况 key 都是 str；这里对 bytes 直接放行，其余类型走 str() 兜底，
+        保证 `_to_bytes` 是确定性的（set 与 get 必须落到同一个分片）。
+        """
+        if isinstance(key, bytes):
+            return key
+        if isinstance(key, str):
+            return key.encode("utf-8", errors="replace")
+        try:
+            return str(key).encode("utf-8", errors="replace")
+        except Exception:
+            return b"<unencodable-key>"
+
+    def _warn_hash_fallback(self, error: Exception) -> None:
+        """首次哈希降级时提示一次，之后静默（避免每次缓存访问都刷日志）"""
+        if getattr(self, "_hash_fallback_warned", False):
+            return
+        self._hash_fallback_warned = True
+        print(
+            f"警告: 分片哈希失败，已降级到备用哈希实现（仅提示一次）: {error!r}"
+        )
     
     def _record_access_pattern(self, key: str):
         """记录访问模式用于优化"""

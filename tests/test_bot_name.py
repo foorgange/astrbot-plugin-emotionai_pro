@@ -111,6 +111,49 @@ class TestSanitizeAiText(unittest.TestCase):
         self.assertEqual(plugin._sanitize_ai_text("AI 说你好"), "AI 说你好")
 
 
+class _AsyncPersonaResolver:
+    """按 AstrBot **真实签名**实现的 persona 解析桩。
+
+    真实实现（`astrbot/core/persona_mgr.py::PersonaManager.resolve_selected_persona`）：
+        async def resolve_selected_persona(self, *, umo, conversation_persona_id,
+                                           platform_name, provider_settings=None)
+            -> tuple[str | None, Personality | None, str | None, bool]
+
+    为什么不能再用同步 MagicMock：
+        v4.0.11 引入 bot_name 自动提取时，本文件用的是
+        `MagicMock(return_value=(...))`（同步桩），于是插件里**漏掉的 await**
+        在测试里完全看不出来（同步桩返回的就是元组，解包当然成功）。
+        结果该 bug 静默存活到 v4.0.14：线上每次都是
+        `TypeError: cannot unpack non-iterable coroutine object`
+        → 被 except 吞成 WARN → bot_name 永远为空
+        → `_sanitize_ai_text()` 退化为空操作（人设一致性修复形同未生效）。
+
+    所以桩必须和真身一样是 async，且参数必须是 keyword-only，
+    这样「忘了 await」和「调用约定写错」都会被测出来。
+    """
+
+    def __init__(self, persona_name="永雏塔菲", prompt="# 永雏塔菲 — 人设",
+                 default_persona=False, raises=None):
+        if default_persona:
+            self._persona = {"name": "default", "prompt": prompt}
+        else:
+            self._persona = {"name": persona_name, "prompt": prompt}
+        self._raises = raises
+        self.calls = []
+
+    async def resolve_selected_persona(self, *, umo, conversation_persona_id,
+                                       platform_name, provider_settings=None):
+        self.calls.append({
+            "umo": umo,
+            "conversation_persona_id": conversation_persona_id,
+            "platform_name": platform_name,
+            "provider_settings": provider_settings,
+        })
+        if self._raises is not None:
+            raise self._raises
+        return ("永雏塔菲", self._persona, None, False)
+
+
 class TestEnsureBotName(unittest.TestCase):
     async def _run_ensure(self, plugin, persona_name="永雏塔菲", prompt="# 永雏塔菲 — 人设", default_persona=False):
         from astrbot.api.event import AstrMessageEvent
@@ -119,16 +162,11 @@ class TestEnsureBotName(unittest.TestCase):
         event = AstrMessageEvent()
         req = ProviderRequest()
 
-        if default_persona:
-            persona = {"name": "default", "prompt": prompt}
-        else:
-            persona = {"name": persona_name, "prompt": prompt}
-
         plugin.context.get_config = MagicMock(return_value={"provider_settings": {}})
         plugin.context.persona_manager = MagicMock()
-        plugin.context.persona_manager.resolve_selected_persona = MagicMock(
-            return_value=("永雏塔菲", persona, False, False)
-        )
+        plugin.context.persona_manager.resolve_selected_persona = _AsyncPersonaResolver(
+            persona_name=persona_name, prompt=prompt, default_persona=default_persona
+        ).resolve_selected_persona
 
         await plugin._ensure_bot_name(event, req)
         return plugin
@@ -150,6 +188,46 @@ class TestEnsureBotName(unittest.TestCase):
         result = asyncio.run(self._run_ensure(plugin, default_persona=True, prompt="# 塔菲 — 人设提示词"))
         self.assertEqual(result._resolved_bot_name, "塔菲")
 
+    def test_async_resolver_is_awaited(self):
+        """回归锁定：async 的 persona 解析必须被 await（v4.0.15 修的静默失效）
+
+        这是上面那个 bug 的**直接**锁定项。用真身同款签名（async + keyword-only）
+        的桩：如果插件漏掉 await，解包到的就是 coroutine 对象 →
+        TypeError 被 except 吞掉 → `_resolved_bot_name` 保持 None → 本测试失败。
+        """
+        import asyncio
+        from astrbot.api.event import AstrMessageEvent
+        from astrbot.api.provider import ProviderRequest
+
+        plugin = make_plugin()
+        resolver = _AsyncPersonaResolver(persona_name="永雏塔菲")
+        plugin.context.get_config = MagicMock(return_value={"provider_settings": {}})
+        plugin.context.persona_manager = MagicMock()
+        plugin.context.persona_manager.resolve_selected_persona = resolver.resolve_selected_persona
+
+        async def go():
+            await plugin._ensure_bot_name(AstrMessageEvent(), ProviderRequest())
+
+        asyncio.run(go())
+
+        self.assertEqual(len(resolver.calls), 1, "解析函数应被调用一次")
+        self.assertEqual(plugin._resolved_bot_name, "永雏塔菲",
+                         "async 解析函数未被 await（解包 coroutine 会抛 TypeError 被吞掉）")
+
+    def test_real_signature_is_keyword_only_async(self):
+        """守住「桩必须与真身同构」这条前提
+
+        如果将来有人把 _AsyncPersonaResolver 改回同步、或改成位置参数，
+        本测试会失败，提醒他：桩一旦与真身不同构，这类 bug 就又会溜过去。
+        """
+        import inspect
+        self.assertTrue(inspect.iscoroutinefunction(_AsyncPersonaResolver.resolve_selected_persona))
+        params = inspect.signature(_AsyncPersonaResolver.resolve_selected_persona).parameters
+        for name in ("umo", "conversation_persona_id", "platform_name", "provider_settings"):
+            self.assertIn(name, params)
+            self.assertEqual(params[name].kind, inspect.Parameter.KEYWORD_ONLY,
+                             f"{name} 必须是 keyword-only（与真身一致）")
+
     def test_idempotent(self):
         """只尝试一次：解析失败后不再重试"""
         import asyncio
@@ -157,8 +235,9 @@ class TestEnsureBotName(unittest.TestCase):
         from astrbot.api.provider import ProviderRequest
 
         plugin = make_plugin()
+        resolver = _AsyncPersonaResolver(raises=Exception("boom"))
         plugin.context.persona_manager = MagicMock()
-        plugin.context.persona_manager.resolve_selected_persona = MagicMock(side_effect=Exception("boom"))
+        plugin.context.persona_manager.resolve_selected_persona = resolver.resolve_selected_persona
 
         async def go():
             event = AstrMessageEvent()
@@ -168,7 +247,7 @@ class TestEnsureBotName(unittest.TestCase):
             await plugin._ensure_bot_name(event, req)  # 第二次不应再调用
 
         asyncio.run(go())
-        self.assertEqual(plugin.context.persona_manager.resolve_selected_persona.call_count, 1)
+        self.assertEqual(len(resolver.calls), 1)
         self.assertIsNone(plugin._resolved_bot_name)
 
     def test_skips_when_config_set(self):
@@ -178,7 +257,9 @@ class TestEnsureBotName(unittest.TestCase):
         from astrbot.api.provider import ProviderRequest
 
         plugin = make_plugin(bot_name="手动设置")
+        resolver = _AsyncPersonaResolver()
         plugin.context.persona_manager = MagicMock()
+        plugin.context.persona_manager.resolve_selected_persona = resolver.resolve_selected_persona
         plugin.context.get_config = MagicMock(return_value={})
 
         async def go():
@@ -187,7 +268,7 @@ class TestEnsureBotName(unittest.TestCase):
             await plugin._ensure_bot_name(event, req)
 
         asyncio.run(go())
-        plugin.context.persona_manager.resolve_selected_persona.assert_not_called()
+        self.assertEqual(len(resolver.calls), 0)
 
 
 if __name__ == "__main__":

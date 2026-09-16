@@ -2,6 +2,7 @@
 import json
 import re
 import time
+import inspect
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -39,7 +40,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.14")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.15")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -297,12 +298,23 @@ class EmotionAIProPlugin(Star):
             if not isinstance(cfg_provider_settings, dict):
                 cfg_provider_settings = {}
 
-            persona_id, persona, force_id, _webchat = self.context.persona_manager.resolve_selected_persona(
+            # ⚠️ AstrBot 的 resolve_selected_persona 是 async def，**必须 await**。
+            # 这里用 inspect.isawaitable 做兼容：async 版本会返回 coroutine 对象，
+            # 同步版本（若将来 AstrBot 改回同步）则直接返回 4 元组。
+            # 历史教训：此处曾漏掉 await，于是解包 coroutine 抛
+            # TypeError: cannot unpack non-iterable coroutine object，
+            # 又被下面的 except 吞成一条 WARN —— 结果 v4.0.11~v4.0.14 期间
+            # bot_name 自动提取**一直静默失效**，_sanitize_ai_text 退化为空操作，
+            # 注入文本里的「AI」字样从未被替换（人设一致性修复形同未生效）。
+            resolved = self.context.persona_manager.resolve_selected_persona(
                 umo=event.unified_msg_origin,
                 conversation_persona_id=req.conversation.persona_id if req.conversation else None,
                 platform_name=event.get_platform_name(),
                 provider_settings=cfg_provider_settings,
             )
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            persona_id, persona, force_id, _webchat = resolved
             if persona is None:
                 return
 

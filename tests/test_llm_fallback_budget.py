@@ -387,11 +387,20 @@ class TestBudgetedFallback(unittest.TestCase):
         self.assertEqual(p.calls, 2)
 
     def test_budget_cuts_off_hanging_provider(self):
-        """一个挂住的 provider 不得吃掉全部预算，更不得让总耗时失控"""
+        """一个挂住的 provider 不得吃掉全部预算，更不得让总耗时失控
+
+        ⚠️ 这里刻意**不**用 budget = 2 × 时间片 的取值（如 0.6）。
+        slice_ = max(MIN_SLICE, budget / max_providers) = max(0.3, 0.15) = 0.3，
+        若 budget 恰为 0.6，则「第一次尝试吃掉 0.3s 后是否还有 0.3s 剩给第二次」
+        正好卡在守卫线 `remaining <= MIN_SLICE` 上；而 asyncio 把定时器交给
+        selector 时会向下取整到毫秒，第一次 wait_for(0.3) 可能提前不到 1ms 返回，
+        使 remaining 落在 0.3 之上、第二次被放行 —— 结果随调度抖动。
+        budget=0.45 时剩余只有约 0.15s，远低于 0.3，第二次必然被拦下。
+        """
         p1 = FakeProvider("vendor/a", behavior="hang")
         p2 = FakeProvider("vendor/b", behavior="hang")
         p3 = FakeProvider("vendor/c", behavior="hang")
-        e = _expert(context=self._ctx_with(p1, p2, p3), budget=0.6,
+        e = _expert(context=self._ctx_with(p1, p2, p3), budget=0.45,
                     max_providers=3)
 
         start = time.monotonic()
@@ -399,23 +408,31 @@ class TestBudgetedFallback(unittest.TestCase):
         elapsed = time.monotonic() - start
 
         # 旧行为会是 3 × 30s；现在应被预算截断在 1s 内
-        self.assertLess(elapsed, 2.0, f"耗时 {elapsed:.2f}s 超出预算约束")
+        self.assertLess(elapsed, 1.5, f"耗时 {elapsed:.2f}s 超出预算约束")
         self.assertEqual(p1.calls, 1)
         self.assertEqual(p2.calls, 0)
         self.assertEqual(p3.calls, 0)
 
     def test_budget_allows_second_attempt_when_it_fits(self):
+        """预算够时应当真的用上第二个候选（而不是一次就放弃）
+
+        budget=0.75、时间片 0.3s：
+          第 1 次剩 0.75 > 0.3 → 尝试 p1（挂住，耗 0.3s）
+          第 2 次剩 0.45 > 0.3 → 尝试 p2（挂住，耗 0.3s）
+          第 3 次剩 0.15 ≤ 0.3 → 停止
+        两侧各留约 0.15s 余量，避开毫秒级定时器抖动能影响的边界。
+        """
         p1 = FakeProvider("vendor/a", behavior="hang")
         p2 = FakeProvider("vendor/b", behavior="hang")
         p3 = FakeProvider("vendor/c")
-        e = _expert(context=self._ctx_with(p1, p2, p3), budget=0.9,
+        e = _expert(context=self._ctx_with(p1, p2, p3), budget=0.75,
                     max_providers=3)
 
         start = time.monotonic()
         self.assertIsNone(_call(e))
         elapsed = time.monotonic() - start
 
-        self.assertLess(elapsed, 2.0)
+        self.assertLess(elapsed, 1.5)
         self.assertEqual(p1.calls, 1)
         self.assertEqual(p2.calls, 1)
         self.assertEqual(p3.calls, 0)

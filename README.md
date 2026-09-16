@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.14
+# EmotionAI Pro - 融合版情感智能插件 v4.0.15
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -12,7 +12,73 @@
 
 ## 更新日志
 
-### v4.0.14（情感分析接入「带总时间预算的备选链」）
+### v4.0.15（缓存哈希加固 + bot_name 自动提取「静默失效」修复）
+
+**只动缓存层的哈希计算与 bot_name 解析这两处，情感逻辑与主链路退避机制一行未动。**
+
+1. **问题**
+   `cache.py` 的 `_get_shard()` 直接用 `xxhash.xxh64()` 算分片。一旦这个调用
+   抛异常（历史问题：`xxhash>=4.0` 不再接受 `str`，抛
+   `TypeError: Strings must be encoded before hashing`），异常就会沿着
+   `cache.get` / `cache.set` 一路冒泡，**炸穿整条消息 pipeline**——不是
+   缓存降级，而是消息直接处理失败。
+
+   v4.0.10 修掉的是"那一次"（先 `encode("utf-8")`）；本次修的是"这一类"。
+
+2. **方案**（`cache.py`）
+   `_get_shard()` 改为**两级兜底**，任何哈希实现的异常都不允许抛给调用方：
+
+   ```
+   xxhash（正常路径，更快、分布更好）
+     └─ 失败 → hashlib.md5
+                └─ 失败 → 内置 hash（分布差些，但绝不成为异常源头）
+   ```
+
+3. **键类型兜底**
+   新增 `_to_bytes()`：非 `str` / `bytes` 的键（如 `int`）不再抛异常，
+   含孤立代理字符的字符串按 `errors="replace"` 编码，并保证同一键在
+   `set` 与 `get` 时必然落到同一个分片。
+
+4. **降级提示只打一次**
+   首次降级打印一条警告，之后静默——避免每次缓存访问都刷日志。
+
+5. **正常路径行为完全不变**
+   有 xxhash 时仍走 xxhash，分片结果与加固前逐位相同（测试已锁定）。
+
+6. **顺带修掉 bot_name 自动提取的「静默失效」**（自 v4.0.11 起潜伏）
+
+   `main.py::_ensure_bot_name` 调用 AstrBot 的
+   `persona_manager.resolve_selected_persona` 时**漏了 `await`**。该方法是
+   `async def`，于是解包 coroutine 抛
+   `TypeError: cannot unpack non-iterable coroutine object`，又被外层
+   `except` 吞成一条 WARN。
+
+   后果：`bot_name` 永远为空 → `_sanitize_ai_text()` 退化为空操作 →
+   **v4.0.11 的「注入文本不得自称 AI」修复实际从未生效**。
+
+   现改为 `inspect.isawaitable` 兼容写法（async 就 `await`，同步则直接取用），
+   跨 AstrBot 版本都安全。
+
+   **测试根因也一并修了**：原 `tests/test_bot_name.py` 用的是**同步**
+   `MagicMock(return_value=(...))`——桩与真身不同构，所以这个 bug 在测试里
+   完全看不出来。现改为按真实签名实现的 `async` + keyword-only 桩，
+   并新增回归锁定项。已验证：把 `await` 去掉时 **4 项测试立刻失败**。
+
+7. **测试**
+   新增 15 项缓存加固测试（`tests/test_cache_hash_hardening.py`）：哈希异常不外泄、
+   md5 / 内置 hash 两级降级、分片稳定性、提示只出现一次、正常路径等价、
+   键类型强制转换。**已验证**：把加固代码还原成加固前的写法，15 项中 13 项
+   立刻失败（另 2 项不依赖加固）。
+
+   同时修正 v4.0.14 引入的两条**时序敏感**断言
+   （`test_budget_cuts_off_hanging_provider`、
+   `test_budget_allows_second_attempt_when_it_fits`）：它们原先取
+   `budget = 2 × 时间片` 的取值，正好卡在预算守卫线上；由于 asyncio 把定时器
+   交给 selector 时会向下取整到毫秒，第一次尝试可能提前不到 1ms 返回，导致
+   "第二次是否被放行"随调度抖动。现改为留有余量的取值。**生产逻辑未改**。
+
+   全量用例 **207 项通过**。
+
 
 **只改情感分析这条后台链路，不影响 AstrBot 主对话自身的退避重试机制。**
 
@@ -421,7 +487,7 @@
 
 ## 结语
 
-**EmotionAI Pro v4.0.0** 不只是一个“好感度插件”，而是一个：
+**EmotionAI Pro** 不只是一个“好感度插件”，而是一个：
 
 > **真实可养成的 AI 内心世界**
 > **渐进式关系演进系统**

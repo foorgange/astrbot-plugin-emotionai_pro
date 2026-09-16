@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.14
+version: v4.0.15
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,44 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.15 修复与加固内容（by foorgange）：
+
+  1. 分片缓存的哈希计算改为「两级兜底」，从「修掉某一次哈希异常」升级为
+     「结构性堵死这类问题」。此前 _get_shard 里 xxhash 一旦抛异常（例如
+     xxhash>=4.0 不再接受 str，抛 TypeError: Strings must be encoded
+     before hashing），异常会沿着 cache.get / cache.set 一路炸穿整条消息
+     pipeline。现在改为：xxhash 失败 → hashlib.md5，md5 再失败 → 内置
+     hash，任何哈希实现的异常都不允许抛给调用方。
+  2. 缓存键类型兜底：新增 _to_bytes()，非 str/bytes 的键（如 int）不再抛
+     异常，含孤立代理字符的字符串用 errors="replace" 编码；且保证同一键在
+     set 与 get 时必然落到同一个分片。
+  3. 降级提示只在首次发生时打印一次，避免每次缓存访问都刷日志。
+  4. 新增 15 项回归测试（tests/test_cache_hash_hardening.py）：哈希异常不外泄、
+     md5 与内置 hash 两级降级、分片稳定性、降级提示只出现一次、
+     正常路径（xxhash）行为完全不变、键类型强制转换。已验证把加固代码还原
+     成加固前的写法时，15 项中有 13 项失败（另 2 项不依赖加固）。
+  5. 修复 bot_name 自动提取「静默失效」（自 v4.0.11 起存在）。根因是
+     main.py::_ensure_bot_name 里调用 AstrBot 的
+     persona_manager.resolve_selected_persona 时**漏了 await** —— 该方法是
+     async def，于是解包 coroutine 抛 TypeError: cannot unpack non-iterable
+     coroutine object，又被外层的 except 吞成一条 WARN。
+     后果是 bot_name 永远为空 → _sanitize_ai_text() 退化为空操作 →
+     v4.0.11 的「注入文本不得自称 AI」修复实际从未生效。
+     现改为 inspect.isawaitable 兼容写法：async 版本会 await，同步版本直接取用，
+     跨 AstrBot 版本都安全。
+     同时修正测试根因：原 tests/test_bot_name.py 用**同步** MagicMock 桩
+     (return_value=(...))，桩与真身不同构，所以这个 bug 测试里完全看不出来。
+     现改为按真实签名实现的 async + keyword-only 桩，并新增回归锁定项；
+     已验证把 await 去掉时 4 项测试立刻失败。
+  6. 修正 v4.0.14 两条时序敏感的不稳定断言：test_budget_cuts_off_hanging_
+     provider 与 test_budget_allows_second_attempt_when_it_fits 原先取
+     budget = 2 × 时间片 的取值，正好卡在守卫线上；由于 asyncio 把定时器
+     交给 selector 时会向下取整到毫秒，第一次尝试可能提前不到 1ms 返回，
+     导致「第二次是否被放行」随调度抖动。现改为留有余量的预算取值，
+     并补上说明。生产逻辑未做任何改动。
+  7. 测试：全量用例 207 项通过。
 
 
   v4.0.14 优化内容（by foorgange）：
