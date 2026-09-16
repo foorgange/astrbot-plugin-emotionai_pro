@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import asdict
 import hashlib
 
+from astrbot.api import logger
+
 from .cache import ShardedTTLCache
 from .models import EnhancedEmotionalState
 from .constants import TimeConstants
@@ -54,7 +56,7 @@ class EmotionAnalysisExpert:
         不传时 AstrBot 会退回读**全局** cmd_config，可能拿到与当前档案
         （如 WebUI 里的 ds-flash）不一致的 provider。
         """
-        print(f"情感分析专家被调用: user_key={user_key}, message_length={len(user_message)}")
+        logger.info(f"情感分析专家被调用: user_key={user_key}, message_length={len(user_message)}")
     
         # 生成更精确的缓存键，避免重复分析相同对话
         message_hash = hashlib.md5(f"{user_message}_{ai_response}".encode()).hexdigest()[:8]
@@ -63,7 +65,7 @@ class EmotionAnalysisExpert:
         # 尝试从缓存获取
         cached = await self.cache.get(cache_key)
         if cached:
-            print("使用缓存的情感分析结果")
+            logger.info("使用缓存的情感分析结果")
             return cached
         
         # 主要分析流程
@@ -89,7 +91,7 @@ class EmotionAnalysisExpert:
                 # 如果连续失败超过3次，暂时禁用LLM
                 if self._llm_failures >= 3:
                     self._llm_available = False
-                    print("LLM连续失败3次，暂时禁用LLM分析")
+                    logger.error("LLM连续失败3次，暂时禁用LLM分析")
                 
                 # 使用智能后备方案
                 updates = self._generate_smart_fallback(user_message, ai_response, current_state)
@@ -97,7 +99,7 @@ class EmotionAnalysisExpert:
                 updates['llm_available'] = False
                 
         except Exception as e:
-            print(f"情感分析过程发生异常: {e}")
+            logger.error(f"情感分析过程发生异常: {e}")
             # 使用紧急后备方案
             updates = self._generate_emergency_fallback(user_message, ai_response, current_state)
             updates['source'] = 'emergency_fallback'
@@ -108,7 +110,7 @@ class EmotionAnalysisExpert:
         
         # 缓存结果（短期缓存）
         await self.cache.set(cache_key, updates, ttl=TimeConstants.ONE_HOUR)
-        print(f"情感分析完成: {updates.get('source', 'unknown')}")
+        logger.info(f"情感分析完成: {updates.get('source', 'unknown')}")
         
         return updates
 
@@ -133,7 +135,7 @@ class EmotionAnalysisExpert:
         """
         chain = self._build_provider_chain(umo)
         if not chain:
-            print("没有可用的LLM提供商")
+            logger.warning("没有可用的LLM提供商")
             return None
 
         loop = asyncio.get_running_loop()
@@ -151,7 +153,7 @@ class EmotionAnalysisExpert:
         )
 
         prompt = self._build_emotion_analysis_prompt(user_message, ai_response, state)
-        print(
+        logger.info(
             f"情感分析备选链: {[self._get_provider_name(p) for p in chain]} | "
             f"预算 {self.time_budget:.0f}s, 最多 {len(attempts)} 次尝试, 每次 {slice_:.1f}s"
         )
@@ -160,7 +162,7 @@ class EmotionAnalysisExpert:
         for index, provider in enumerate(attempts, start=1):
             remaining = deadline - loop.time()
             if remaining <= self.MIN_SLICE:
-                print(f"情感分析时间预算耗尽（剩余 {remaining:.1f}s），停止尝试")
+                logger.warning(f"情感分析时间预算耗尽（剩余 {remaining:.1f}s），停止尝试")
                 break
 
             # 同一 provider 连续重试时保留退避；换 provider 则无需等待
@@ -171,23 +173,23 @@ class EmotionAnalysisExpert:
 
             timeout = min(slice_, max(self.MIN_SLICE, deadline - loop.time()))
             name = self._get_provider_name(provider)
-            print(f"情感分析尝试 [{index}/{len(attempts)}] provider={name} 超时={timeout:.1f}s")
+            logger.warning(f"情感分析尝试 [{index}/{len(attempts)}] provider={name} 超时={timeout:.1f}s")
 
             try:
                 result = await self._execute_llm_call(provider, prompt, timeout=timeout)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print(f"情感分析 provider [{name}] 调用异常: {e}")
+                logger.error(f"情感分析 provider [{name}] 调用异常: {e}")
                 result = None
 
             if result and len(result) > 10:  # 确保有足够的返回内容
-                print(f"情感分析成功: provider={name}")
+                logger.info(f"情感分析成功: provider={name}")
                 return result
 
-            print(f"provider [{name}] 未返回有效内容，切换下一个")
+            logger.warning(f"provider [{name}] 未返回有效内容，切换下一个")
 
-        print("情感分析备选链全部失败，降级到本地兜底")
+        logger.error("情感分析备选链全部失败，降级到本地兜底")
         return None
 
     def _get_all_providers(self) -> List[Any]:
@@ -200,7 +202,7 @@ class EmotionAnalysisExpert:
         try:
             return list(getter() or [])
         except Exception as e:
-            print(f"读取 provider 列表失败: {e}")
+            logger.error(f"读取 provider 列表失败: {e}")
             return []
 
     def _get_provider_by_id(self, provider_id: str) -> Optional[Any]:
@@ -217,7 +219,7 @@ class EmotionAnalysisExpert:
         try:
             return getter(provider_id)
         except Exception as e:
-            print(f"按 id 解析 provider 失败 [{provider_id}]: {e}")
+            logger.error(f"按 id 解析 provider 失败 [{provider_id}]: {e}")
             return None
 
     def _resolve_fallback_provider_ids(self, umo: str = None) -> List[str]:
@@ -243,7 +245,7 @@ class EmotionAnalysisExpert:
                 return []
             return [str(i).strip() for i in ids if isinstance(i, str) and i.strip()]
         except Exception as e:
-            print(f"读取档案退避链失败: {e}")
+            logger.error(f"读取档案退避链失败: {e}")
             return []
 
     def _build_provider_chain(self, umo: str = None) -> List[Any]:
@@ -280,7 +282,7 @@ class EmotionAnalysisExpert:
         try:
             add(self._find_target_provider(providers, umo))
         except Exception as e:
-            print(f"首选 provider 解析失败: {e}")
+            logger.error(f"首选 provider 解析失败: {e}")
 
         # 2. 会话主 LLM（辅助 LLM 已命中时的第二候选）
         add(self._get_main_provider(umo))
@@ -304,18 +306,18 @@ class EmotionAnalysisExpert:
         切换，方便单独验证首选 provider 是否可用。
         """
         if not self.context:
-            print("没有context，无法调用LLM")
+            logger.warning("没有context，无法调用LLM")
             return None
         
         providers = self._get_all_providers()
         if not providers:
-            print("没有可用的LLM提供商")
+            logger.warning("没有可用的LLM提供商")
             return None
         
         # 确定目标提供商
         target_provider = self._find_target_provider(providers, umo)
         if not target_provider:
-            print("找不到目标LLM提供商")
+            logger.warning("找不到目标LLM提供商")
             return None
         
         # 构建提示词
@@ -326,7 +328,7 @@ class EmotionAnalysisExpert:
             result = await self._execute_llm_call(target_provider, prompt)
             return result
         except Exception as e:
-            print(f"LLM调用执行失败: {e}")
+            logger.error(f"LLM调用执行失败: {e}")
             return None
 
     def _get_provider_meta(self, provider) -> Tuple[str, str]:
@@ -347,7 +349,7 @@ class EmotionAnalysisExpert:
                 pid = str(getattr(meta, "id", "") or "")
                 model = str(getattr(meta, "model", "") or "")
         except Exception as e:
-            print(f"读取 provider 元信息失败: {e}")
+            logger.error(f"读取 provider 元信息失败: {e}")
         if not pid:
             # 兼容非标准对象：退化为 name 属性或类名，仅用于日志与兜底
             pid = str(getattr(provider, "name", "") or "")
@@ -381,7 +383,7 @@ class EmotionAnalysisExpert:
                 # 兼容不接受参数的旧版签名
                 return getter()
         except Exception as e:
-            print(f"获取主LLM失败，回退到名称匹配: {e}")
+            logger.error(f"获取主LLM失败，回退到名称匹配: {e}")
             return None
 
     def _find_target_provider(self, providers: List, umo: str = None) -> Optional[Any]:
@@ -403,15 +405,15 @@ class EmotionAnalysisExpert:
                 for provider in providers:
                     pid, model = self._get_provider_meta(provider)
                     if target in pid.lower() or target in model.lower():
-                        print(f"找到配置的辅助LLM提供商: {pid}")
+                        logger.info(f"找到配置的辅助LLM提供商: {pid}")
                         return provider
-                print(f"未匹配到辅助LLM提供商 [{self.secondary_llm_provider}]，回退到主LLM")
+                logger.warning(f"未匹配到辅助LLM提供商 [{self.secondary_llm_provider}]，回退到主LLM")
 
         # 2. 未配置 → 使用主 LLM
         main_provider = self._get_main_provider(umo)
         if main_provider is not None:
             pid, _ = self._get_provider_meta(main_provider)
-            print(f"使用主LLM进行情感分析: {pid}")
+            logger.info(f"使用主LLM进行情感分析: {pid}")
             return main_provider
 
         # 3. 名称含 deepseek / default
@@ -419,12 +421,12 @@ class EmotionAnalysisExpert:
             pid, model = self._get_provider_meta(provider)
             haystack = f"{pid} {model}".lower()
             if "deepseek" in haystack or "default" in haystack:
-                print(f"找到DeepSeek提供商: {pid}")
+                logger.info(f"找到DeepSeek提供商: {pid}")
                 return provider
 
         # 4. 兜底：第一个可用的
         pid, _ = self._get_provider_meta(providers[0])
-        print(f"使用第一个可用提供商: {pid}")
+        logger.info(f"使用第一个可用提供商: {pid}")
         return providers[0]
 
     def _target_model(self) -> Optional[str]:
@@ -445,30 +447,30 @@ class EmotionAnalysisExpert:
         if timeout is None:
             timeout = self.llm_timeout
         provider_name = self._get_provider_name(provider)
-        print(f"使用LLM提供商 [{provider_name}] 进行情感分析")
+        logger.info(f"使用LLM提供商 [{provider_name}] 进行情感分析")
         
         # 记录提示词长度（用于调试）
-        print(f"情感分析提示词长度: {len(prompt)} 字符")
+        logger.info(f"情感分析提示词长度: {len(prompt)} 字符")
         
         try:
             # 尝试调用text_chat方法（异步）
             if hasattr(provider, 'text_chat') and asyncio.iscoroutinefunction(provider.text_chat):
-                print(f"调用 {provider_name}.text_chat()")
+                logger.info(f"调用 {provider_name}.text_chat()")
                 result = await asyncio.wait_for(
                     provider.text_chat(prompt, model=self._target_model()),
                     timeout=timeout
                 )
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
-                    print(f"LLM情感分析成功，响应长度: {len(text)}")
+                    logger.info(f"LLM情感分析成功，响应长度: {len(text)}")
                     return text
                 else:
-                    print("LLM返回空或过短的响应")
+                    logger.warning("LLM返回空或过短的响应")
                     return None
             
             # 尝试调用chat_completion方法（异步）
             elif hasattr(provider, 'chat_completion') and asyncio.iscoroutinefunction(provider.chat_completion):
-                print(f"调用 {provider_name}.chat_completion()")
+                logger.info(f"调用 {provider_name}.chat_completion()")
                 
                 # 构建消息
                 messages = [{"role": "user", "content": prompt}]
@@ -478,25 +480,25 @@ class EmotionAnalysisExpert:
                 )
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
-                    print(f"LLM情感分析成功，响应长度: {len(text)}")
+                    logger.info(f"LLM情感分析成功，响应长度: {len(text)}")
                     return text
             
             # 尝试同步方法
             elif hasattr(provider, 'text_chat') and not asyncio.iscoroutinefunction(provider.text_chat):
-                print(f"调用同步方法 {provider_name}.text_chat()")
+                logger.info(f"调用同步方法 {provider_name}.text_chat()")
                 result = provider.text_chat(prompt, model=self._target_model())
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
                     return text
             
-            print(f"提供商 {provider_name} 不支持已知的调用方法")
+            logger.warning(f"提供商 {provider_name} 不支持已知的调用方法")
             return None
             
         except asyncio.TimeoutError:
-            print(f"LLM调用超时 ({timeout:.1f}秒)")
+            logger.warning(f"LLM调用超时 ({timeout:.1f}秒)")
             return None
         except Exception as e:
-            print(f"LLM调用异常: {e}")
+            logger.error(f"LLM调用异常: {e}")
             return None
 
     def _extract_response_text(self, response_obj) -> str:
@@ -754,18 +756,18 @@ class EmotionAnalysisExpert:
                 else:
                     updates['attitude_text'] = "友好交流"
                 
-                print(f"成功解析JSON情感分析结果，包含 {len(updates)} 个更新")
+                logger.info(f"成功解析JSON情感分析结果，包含 {len(updates)} 个更新")
                 return updates
                 
         except json.JSONDecodeError as e:
-            print(f"JSON解析失败: {e}, 文本: {analysis_text[:100]}")
+            logger.error(f"JSON解析失败: {e}, 文本: {analysis_text[:100]}")
         except KeyError as e:
-            print(f"JSON字段缺失: {e}")
+            logger.warning(f"JSON字段缺失: {e}")
         except Exception as e:
-            print(f"解析情感分析结果失败: {e}")
+            logger.error(f"解析情感分析结果失败: {e}")
         
         # JSON解析失败，尝试从文本提取
-        print("JSON解析失败，尝试文本提取")
+        logger.error("JSON解析失败，尝试文本提取")
         return self._extract_updates_from_text(analysis_text)
 
     def _clean_json_response(self, text: str) -> str:
@@ -887,4 +889,4 @@ class EmotionAnalysisExpert:
         """重置LLM可用性状态"""
         self._llm_available = True
         self._llm_failures = 0
-        print("已重置LLM可用性状态")
+        logger.info("已重置LLM可用性状态")

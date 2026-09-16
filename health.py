@@ -2,12 +2,10 @@
 import asyncio
 import psutil
 import time
-import logging  
 from typing import Dict, Any
 from dataclasses import dataclass
 
-# 创建日志记录器
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 @dataclass
 class SystemHealth:

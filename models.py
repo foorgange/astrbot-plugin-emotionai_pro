@@ -8,6 +8,8 @@ from collections import deque
 from pathlib import Path
 import re
 
+from astrbot.api import logger
+
 from .constants import EmotionConstants, TimeConstants
 from .config import AttitudeType, RelationshipStage, PrivacyLevel
 
@@ -72,7 +74,7 @@ class EmotionalMetrics:
                 setattr(self, emotion, max(min_v, min(max_v, current + change)))
             else:
                 # 记录警告但不抛出异常
-                print(f"警告: 未知的情感类型 '{emotion}'")
+                logger.warning(f"未知的情感类型 '{emotion}'")
 
         # 更新后重新验证
         self._validate_emotions()
@@ -162,11 +164,11 @@ class InteractionStats:
         if self.positive_count + self.negative_count > self.total_count:
             # 自动修复不一致
             self.total_count = self.positive_count + self.negative_count
-            print(f"修复互动统计不一致: total_count调整为{self.total_count}")
+            logger.warning(f"修复互动统计不一致: total_count调整为{self.total_count}")
         
         if self.last_interaction_time < 0:
             self.last_interaction_time = 0
-            print("修复无效的last_interaction_time")
+            logger.warning("修复无效的last_interaction_time")
     
     def record_interaction(self, is_positive: bool = True):
         """记录互动"""
@@ -256,12 +258,12 @@ class TextDescriptions:
         # 验证态度
         if not self.is_valid_attitude(self.attitude):
             self.attitude = "中立"
-            print(f"修复无效的态度描述: {self.attitude}")
+            logger.warning(f"修复无效的态度描述: {self.attitude}")
 
         # 验证关系
         if not self.is_valid_relationship(self.relationship):
             self.relationship = "陌生人"
-            print(f"修复无效的关系描述: {self.relationship}")
+            logger.warning(f"修复无效的关系描述: {self.relationship}")
         
         # 验证时间戳
         current_time = time.time()
@@ -358,13 +360,13 @@ class EnhancedEmotionalState:
         if not EmotionConstants.MIN_FAVOR <= self.favor <= EmotionConstants.MAX_FAVOR:
             self.favor = max(EmotionConstants.MIN_FAVOR, 
                            min(EmotionConstants.MAX_FAVOR, self.favor))
-            print(f"调整好感度到有效范围: {self.favor}")
+            logger.info(f"调整好感度到有效范围: {self.favor}")
         
         # 验证亲密度
         if not EmotionConstants.MIN_INTIMACY <= self.intimacy <= EmotionConstants.MAX_INTIMACY:
             self.intimacy = max(EmotionConstants.MIN_INTIMACY, 
                               min(EmotionConstants.MAX_INTIMACY, self.intimacy))
-            print(f"调整亲密度到有效范围: {self.intimacy}")
+            logger.info(f"调整亲密度到有效范围: {self.intimacy}")
         
         # 验证强制更新计数器
         if self.force_update_counter < 0:
@@ -388,7 +390,7 @@ class EnhancedEmotionalState:
                     self.relationship_stage = "敌对期"
             else:
                 self.relationship_stage = "初识期"
-            print(f"修复无效的关系阶段: {self.relationship_stage}")
+            logger.warning(f"修复无效的关系阶段: {self.relationship_stage}")
     
     def _validate_progress_values(self):
         """验证进度值"""
@@ -455,7 +457,7 @@ class EnhancedEmotionalState:
             )
             
         except (TypeError, ValueError, KeyError) as e:
-            print(f"从字典创建EnhancedEmotionalState失败: {e}")
+            logger.error(f"从字典创建EnhancedEmotionalState失败: {e}")
             # 返回一个默认状态
             return cls(user_key=data.get('user_key', 'unknown'))
     
@@ -502,7 +504,7 @@ class EnhancedEmotionalState:
             self._validate_progress_values()
             return True
         except Exception as e:
-            print(f"状态验证失败: {e}")
+            logger.error(f"状态验证失败: {e}")
             return False
     
     def repair(self):
@@ -511,9 +513,9 @@ class EnhancedEmotionalState:
             self._validate_core_values()
             self._validate_relationship_stage()
             self._validate_progress_values()
-            print(f"状态修复完成: {self.user_key}")
+            logger.info(f"状态修复完成: {self.user_key}")
         except Exception as e:
-            print(f"状态修复失败: {e}")
+            logger.error(f"状态修复失败: {e}")
 
 @dataclass  
 class RankingEntry:

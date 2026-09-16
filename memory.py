@@ -7,6 +7,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import heapq
 
+from astrbot.api import logger
+
 from .cache import ShardedTTLCache
 from .storage import UserStateRepository
 from .constants import TimeConstants, UpdateThresholds
@@ -77,7 +79,7 @@ class EnhancedMemorySystem:
         self.cleanup_task: Optional[asyncio.Task] = None
         self._start_cleanup_task()
         
-        print(f"增强记忆系统初始化完成，长期记忆限制: {max_long_term_memory}条")
+        logger.info(f"增强记忆系统初始化完成，长期记忆限制: {max_long_term_memory}条")
     
     async def _ensure_memory_loaded(self):
         """确保记忆数据已加载"""
@@ -91,10 +93,10 @@ class EnhancedMemorySystem:
                     self._build_memory_index()
                     
                     self._memory_loaded = True
-                    print(f"加载了 {len(self._long_term_memory)} 个用户的长期记忆")
+                    logger.info(f"加载了 {len(self._long_term_memory)} 个用户的长期记忆")
                     
                 except Exception as e:
-                    print(f"加载记忆数据失败: {e}")
+                    logger.error(f"加载记忆数据失败: {e}")
                     self._long_term_memory = {}
                     self._memory_loaded = True
     
@@ -109,7 +111,7 @@ class EnhancedMemorySystem:
                         record = InteractionRecord.from_dict(record_data)
                         record_deque.append(record)
                     except Exception as e:
-                        print(f"反序列化记忆记录失败: {e}")
+                        logger.error(f"反序列化记忆记录失败: {e}")
                         continue
                 result[user_key] = record_deque
         return result
@@ -147,7 +149,7 @@ class EnhancedMemorySystem:
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"记忆清理任务错误: {e}")
+                    logger.error(f"记忆清理任务错误: {e}")
                     await asyncio.sleep(TimeConstants.ONE_MINUTE * 5)
         
         self.cleanup_task = asyncio.create_task(cleanup_loop())
@@ -158,7 +160,7 @@ class EnhancedMemorySystem:
             # 清理短期记忆中的过期条目
             cleanup_result = await self.short_term_memory.cleanup_all_expired()
             if cleanup_result['total_cleaned'] > 0:
-                print(f"清理短期记忆: {cleanup_result['total_cleaned']}条")
+                logger.info(f"清理短期记忆: {cleanup_result['total_cleaned']}条")
             
             # 检查长期记忆大小
             total_records = sum(len(records) for records in self._long_term_memory.values())
@@ -166,7 +168,7 @@ class EnhancedMemorySystem:
                 await self._prune_long_term_memory()
             
         except Exception as e:
-            print(f"记忆清理失败: {e}")
+            logger.error(f"记忆清理失败: {e}")
     
     async def _prune_long_term_memory(self):
         """修剪长期记忆"""
@@ -200,10 +202,10 @@ class EnhancedMemorySystem:
             # 重建索引
             self._build_memory_index()
             
-            print(f"修剪长期记忆完成: {records_kept}条记录被保留")
+            logger.info(f"修剪长期记忆完成: {records_kept}条记录被保留")
             
         except Exception as e:
-            print(f"修剪长期记忆失败: {e}")
+            logger.error(f"修剪长期记忆失败: {e}")
     
     async def add_interaction(self, user_key: str, user_msg: str, 
                             ai_response: str, emotional_significance: int,
@@ -245,10 +247,10 @@ class EnhancedMemorySystem:
                 # 保存长期记忆
                 await self._save_long_term_memory()
                 
-                print(f"添加到长期记忆 - 用户: {user_key}, 意义: {emotional_significance}/10")
+                logger.info(f"添加到长期记忆 - 用户: {user_key}, 意义: {emotional_significance}/10")
             
         except Exception as e:
-            print(f"添加互动到记忆系统失败: {e}")
+            logger.error(f"添加互动到记忆系统失败: {e}")
             # 不重新抛出异常，避免影响主流程
     
     async def _add_to_short_term_memory(self, user_key: str, interaction: InteractionRecord):
@@ -270,7 +272,7 @@ class EnhancedMemorySystem:
             await self.short_term_memory.set(f"recent_{user_key}", recent_interactions)
             
         except Exception as e:
-            print(f"添加到短期记忆失败: {e}")
+            logger.error(f"添加到短期记忆失败: {e}")
     
     async def _add_to_long_term_memory(self, user_key: str, interaction: InteractionRecord):
         """添加到长期记忆"""
@@ -298,7 +300,7 @@ class EnhancedMemorySystem:
                 memory_data = self._serialize_memory_data()
                 await self.repository.save_memory_data(memory_data)
         except Exception as e:
-            print(f"保存长期记忆失败: {e}")
+            logger.error(f"保存长期记忆失败: {e}")
     
     def get_relationship_context(self, user_key: str) -> str:
         """获取关系上下文（长期记忆）- 修复同步方法"""
@@ -362,7 +364,7 @@ class EnhancedMemorySystem:
             return context
             
         except Exception as e:
-            print(f"获取关系上下文失败: {e}")
+            logger.error(f"获取关系上下文失败: {e}")
             return "【长期关系】记忆系统暂时不可用\n"
     
     async def get_relationship_context_async(self, user_key: str) -> str:
@@ -399,7 +401,7 @@ class EnhancedMemorySystem:
             return context
             
         except Exception as e:
-            print(f"获取关系上下文失败: {e}")
+            logger.error(f"获取关系上下文失败: {e}")
             return "【长期关系】记忆系统暂时不可用\n"
     
     async def get_recent_context(self, user_key: str) -> str:
@@ -411,7 +413,7 @@ class EnhancedMemorySystem:
                 return "暂无近期对话记忆"
             
             if not isinstance(recent, list):
-                print(f"近期对话数据格式错误，期望list，实际为{type(recent)}")
+                logger.error(f"近期对话数据格式错误，期望list，实际为{type(recent)}")
                 return "近期对话记忆格式异常"
             
             if not recent:
@@ -430,13 +432,13 @@ class EnhancedMemorySystem:
                     context += f"{i}. [{time_str}] 用户: {user_msg}\n"
                     context += f"   情感意义: {significance}/10\n"
                 except Exception as e:
-                    print(f"处理单条互动记录时出错: {e}")
+                    logger.error(f"处理单条互动记录时出错: {e}")
                     continue
             
             return context
             
         except Exception as e:
-            print(f"获取近期上下文失败，用户{user_key}，错误: {e}")
+            logger.error(f"获取近期上下文失败，用户{user_key}，错误: {e}")
             return "获取近期对话失败"
     
     async def get_user_memory_stats(self, user_key: str) -> Dict[str, Any]:
@@ -493,7 +495,7 @@ class EnhancedMemorySystem:
             }
             
         except Exception as e:
-            print(f"获取用户记忆统计失败: {e}")
+            logger.error(f"获取用户记忆统计失败: {e}")
             return {
                 'long_term_count': 0,
                 'recent_count': 0,
@@ -535,7 +537,7 @@ class EnhancedMemorySystem:
             return results
             
         except Exception as e:
-            print(f"搜索记忆失败: {e}")
+            logger.error(f"搜索记忆失败: {e}")
             return []
     
     async def get_memory_summary(self) -> Dict[str, Any]:
@@ -576,12 +578,12 @@ class EnhancedMemorySystem:
             }
             
         except Exception as e:
-            print(f"获取记忆系统摘要失败: {e}")
+            logger.error(f"获取记忆系统摘要失败: {e}")
             return {}
     
     async def close(self):
         """关闭记忆系统"""
-        print("正在关闭记忆系统...")
+        logger.info("正在关闭记忆系统...")
         
         if self.cleanup_task:
             self.cleanup_task.cancel()
@@ -593,4 +595,4 @@ class EnhancedMemorySystem:
         # 保存长期记忆
         await self._save_long_term_memory()
         
-        print("记忆系统已关闭")
+        logger.info("记忆系统已关闭")

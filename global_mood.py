@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
+from astrbot.api import logger
+
 from .models import EmotionalMetrics
 from .storage import AtomicJSONStorage
 from .constants import PathConstants
@@ -100,7 +102,7 @@ class GlobalMoodStore:
         try:
             await self.storage.save(mood.to_dict())
         except Exception as e:
-            print(f"全局心情保存失败: {e}")
+            logger.error(f"全局心情保存失败: {e}")
 
     async def close(self) -> None:
         """关闭存储（无共享资源需释放，保留以统一接口）"""

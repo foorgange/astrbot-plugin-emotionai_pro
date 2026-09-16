@@ -9,6 +9,8 @@ import shutil
 from datetime import datetime, timedelta
 import hashlib
 
+from astrbot.api import logger
+
 from .models import EnhancedEmotionalState
 from .constants import PathConstants
 
@@ -36,9 +38,9 @@ class AtomicJSONStorage:
                     if await self._verify_checksum(content):
                         return json.loads(content) if content.strip() else {}
                     else:
-                        print(f"警告: 文件 {self.file_path} 校验和不匹配")
+                        logger.warning(f"文件 {self.file_path} 校验和不匹配")
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                print(f"主文件加载失败: {e}")
+                logger.error(f"主文件加载失败: {e}")
             
             # 主文件损坏，尝试备份文件
             backup_path = self.file_path.with_suffix('.bak')
@@ -50,13 +52,13 @@ class AtomicJSONStorage:
                         
                         # 恢复备份
                         await self._save_data(data)
-                        print(f"从备份文件恢复数据: {backup_path}")
+                        logger.info(f"从备份文件恢复数据: {backup_path}")
                         return data
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    print(f"备份文件也损坏: {e}")
+                    logger.error(f"备份文件也损坏: {e}")
             
             # 两个文件都损坏，返回空数据
-            print(f"警告: 数据文件 {self.file_path} 完全损坏，返回空数据")
+            logger.warning(f"数据文件 {self.file_path} 完全损坏，返回空数据")
             return {}
     
     async def save(self, data: Dict[str, Any]):
@@ -82,7 +84,7 @@ class AtomicJSONStorage:
             try:
                 shutil.copyfile(self.file_path, backup_path)
             except Exception as e:
-                print(f"备份创建失败: {e}")
+                logger.error(f"备份创建失败: {e}")
 
         # 先写入临时文件
         try:
@@ -99,7 +101,7 @@ class AtomicJSONStorage:
             # 如果失败，删除临时文件
             if self.temp_file_path.exists():
                 self.temp_file_path.unlink()
-            print(f"数据保存失败: {e}")
+            logger.error(f"数据保存失败: {e}")
             raise e
 
     def _calculate_checksum(self, content: str) -> str:
@@ -112,7 +114,7 @@ class AtomicJSONStorage:
             async with aiofiles.open(self._checksum_file, 'w', encoding='utf-8') as f:
                 await f.write(checksum)
         except Exception as e:
-            print(f"校验和保存失败: {e}")
+            logger.error(f"校验和保存失败: {e}")
     
     async def _verify_checksum(self, content: str) -> bool:
         """验证校验和"""
@@ -159,7 +161,7 @@ class UserStateRepository:
             try:
                 return EnhancedEmotionalState.from_dict(self._user_data[user_key])
             except (TypeError, KeyError, ValueError) as e:
-                print(f"用户 {user_key} 数据格式错误: {e}")
+                logger.error(f"用户 {user_key} 数据格式错误: {e}")
                 # 尝试修复损坏的数据
                 await self._try_repair_user_data(user_key)
                 return None
@@ -174,9 +176,9 @@ class UserStateRepository:
                     default_state = EnhancedEmotionalState(user_key=user_key)
                     self._user_data[user_key] = default_state.to_dict()
                     await self.user_storage.save(self._user_data)
-                    print(f"已修复用户 {user_key} 的损坏数据")
+                    logger.warning(f"已修复用户 {user_key} 的损坏数据")
                 except Exception as e:
-                    print(f"修复用户数据失败: {e}")
+                    logger.error(f"修复用户数据失败: {e}")
     
     async def save_user_state(self, user_key: str, state: EnhancedEmotionalState):
         """保存用户状态 - 差异化更新"""
@@ -206,9 +208,9 @@ class UserStateRepository:
             
             if updated_count > 0:
                 await self.user_storage.save(self._user_data)
-                print(f"差异化保存: 更新了 {updated_count} 个用户状态，总用户数: {len(self._user_data)}")
+                logger.info(f"差异化保存: 更新了 {updated_count} 个用户状态，总用户数: {len(self._user_data)}")
             else:
-                print("没有需要保存的用户状态变更")
+                logger.info("没有需要保存的用户状态变更")
     
     def _is_state_different(self, old_state: Dict[str, Any], new_state: Dict[str, Any]) -> bool:
         """比较两个状态是否不同"""
@@ -238,7 +240,7 @@ class UserStateRepository:
             
             # 保存到文件
             await self.user_storage.save(self._user_data)
-            print(f"保存了 {len(updated_states)} 个更新的用户状态")
+            logger.info(f"保存了 {len(updated_states)} 个更新的用户状态")
     
     async def get_all_user_states(self) -> Dict[str, EnhancedEmotionalState]:
         """获取所有用户状态"""
@@ -249,7 +251,7 @@ class UserStateRepository:
             try:
                 result[user_key] = EnhancedEmotionalState.from_dict(data)
             except (TypeError, KeyError, ValueError) as e:
-                print(f"用户 {user_key} 数据格式错误: {e}")
+                logger.error(f"用户 {user_key} 数据格式错误: {e}")
                 # 跳过损坏的数据
                 continue
         return result
@@ -317,7 +319,7 @@ class BackupManager:
                         shutil.copy2(src, dst)
                         backed_up_files += 1
                     except Exception as e:
-                        print(f"备份文件 {filename} 失败: {e}")
+                        logger.error(f"备份文件 {filename} 失败: {e}")
             
             if backed_up_files == 0:
                 raise Exception("没有文件可备份")
@@ -328,7 +330,7 @@ class BackupManager:
             # 清理旧备份
             await self._cleanup_old_backups()
             
-            print(f"备份创建成功: {backup_name}, 包含 {backed_up_files} 个文件")
+            logger.info(f"备份创建成功: {backup_name}, 包含 {backed_up_files} 个文件")
             return backup_name
     
     async def _create_backup_metadata(self, backup_path: Path, file_count: int):
@@ -337,7 +339,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.0.15'
+            'plugin_version': '4.0.17'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'
@@ -357,7 +359,7 @@ class BackupManager:
                     
                     if dir_time < cutoff_time:
                         shutil.rmtree(backup_dir)
-                        print(f"删除旧备份: {backup_dir.name}")
+                        logger.info(f"删除旧备份: {backup_dir.name}")
                 except ValueError:
                     # 目录名格式错误，检查元数据
                     metadata_path = backup_dir / 'backup_metadata.json'
@@ -368,7 +370,7 @@ class BackupManager:
                                 backup_time = datetime.fromisoformat(metadata['backup_time'])
                                 if backup_time < cutoff_time:
                                     shutil.rmtree(backup_dir)
-                                    print(f"通过元数据删除旧备份: {backup_dir.name}")
+                                    logger.info(f"通过元数据删除旧备份: {backup_dir.name}")
                         except Exception:
                             # 无法读取元数据，跳过
                             continue
@@ -432,11 +434,11 @@ class BackupManager:
                 
                 if src.exists():
                     shutil.copy2(src, dst)
-                    print(f"恢复文件: {filename}")
+                    logger.info(f"恢复文件: {filename}")
             
-            print(f"成功从备份 {backup_name} 恢复数据")
+            logger.info(f"成功从备份 {backup_name} 恢复数据")
             return True
             
         except Exception as e:
-            print(f"恢复备份失败: {e}")
+            logger.error(f"恢复备份失败: {e}")
             return False

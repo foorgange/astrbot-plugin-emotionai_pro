@@ -9,6 +9,8 @@ import re
 from dataclasses import asdict
 import hashlib
 
+from astrbot.api import logger
+
 from .models import EnhancedEmotionalState, RankingEntry, InteractionStats
 from .storage import UserStateRepository, BackupManager
 from .cache import ShardedTTLCache
@@ -55,7 +57,7 @@ class UserStateManager:
         self.monitor_task: Optional[asyncio.Task] = None
         self._start_monitoring()
         
-        print(f"用户状态管理器初始化完成，缓存大小: {config.cache_max_size}")
+        logger.info(f"用户状态管理器初始化完成，缓存大小: {config.cache_max_size}")
 
     async def smart_cache_cleanup(self) -> int:
         """智能缓存清理 - 优化版本"""
@@ -73,7 +75,7 @@ class UserStateManager:
                     if days_since_last <= 7:
                         active_users.add(user_key)
             
-            print(f"活跃用户数量: {len(active_users)}")
+            logger.info(f"活跃用户数量: {len(active_users)}")
             
             # 清理不活跃或初始状态的缓存
             cache_stats = await self.cache.get_stats()
@@ -95,7 +97,7 @@ class UserStateManager:
                         cleaned_count += 1
                         
                         if cleaned_count % 10 == 0:
-                            print(f"已清理 {cleaned_count} 个初始状态用户缓存")
+                            logger.info(f"已清理 {cleaned_count} 个初始状态用户缓存")
                     
                     # 如果清理了足够多的条目，停止
                     if cleaned_count >= 50:  # 每次最多清理50个
@@ -103,13 +105,13 @@ class UserStateManager:
             
             if cleaned_count > 0:
                 new_stats = await self.cache.get_stats()
-                print(f"智能缓存清理完成: 清理了 {cleaned_count} 个初始状态用户, "
+                logger.info(f"智能缓存清理完成: 清理了 {cleaned_count} 个初始状态用户, "
                       f"缓存条目从 {total_entries} 减少到 {new_stats.get('total_entries', 0)}")
             
             return cleaned_count
             
         except Exception as e:
-            print(f"智能缓存清理失败: {e}")
+            logger.error(f"智能缓存清理失败: {e}")
             self.stats['errors'] += 1
             return 0
 
@@ -152,7 +154,7 @@ class UserStateManager:
             return is_initial
             
         except Exception as e:
-            print(f"判断用户初始状态失败 {user_key}: {e}")
+            logger.error(f"判断用户初始状态失败 {user_key}: {e}")
             self.stats['errors'] += 1
             return False  # 出错时保守处理，不清理
 
@@ -182,14 +184,14 @@ class UserStateManager:
                     # 每小时报告一次
                     current_time = time.time()
                     if current_time - last_save_report > 3600:
-                        print(f"自动保存统计: {self.stats['state_saves']}次保存, "
+                        logger.info(f"自动保存统计: {self.stats['state_saves']}次保存, "
                               f"平均耗时 {self.stats['avg_save_time']:.3f}s")
                         last_save_report = current_time
                         
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"自动保存失败: {e}")
+                    logger.error(f"自动保存失败: {e}")
                     self.stats['errors'] += 1
                     await asyncio.sleep(TimeConstants.ONE_MINUTE)
         
@@ -207,24 +209,24 @@ class UserStateManager:
                     hit_rate = cache_stats.get('hit_rate', 0)
                     
                     if hit_rate < 30:
-                        print(f"缓存警告: 命中率较低 ({hit_rate:.1f}%)")
+                        logger.warning(f"缓存警告: 命中率较低 ({hit_rate:.1f}%)")
                     
                     # 检查脏键数量
                     async with self.dirty_lock:
                         dirty_count = len(self.dirty_keys)
                     
                     if dirty_count > self.config.max_dirty_keys * 0.8:
-                        print(f"脏键警告: {dirty_count}个待保存键")
+                        logger.warning(f"脏键警告: {dirty_count}个待保存键")
                     
                     # 检查内存使用
                     memory_info = cache_stats.get('memory_usage', {})
                     if memory_info.get('usage_percent', 0) > 80:
-                        print(f"内存警告: 使用率 {memory_info['usage_percent']:.1f}%")
+                        logger.warning(f"内存警告: 使用率 {memory_info['usage_percent']:.1f}%")
                         
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"监控任务错误: {e}")
+                    logger.error(f"监控任务错误: {e}")
                     await asyncio.sleep(60)
         
         self.monitor_task = asyncio.create_task(monitor_loop())
@@ -256,7 +258,7 @@ class UserStateManager:
             return state
             
         except Exception as e:
-            print(f"加载用户状态失败 {user_key}: {e}")
+            logger.error(f"加载用户状态失败 {user_key}: {e}")
             self.stats['errors'] += 1
             # 返回一个默认状态
             return EnhancedEmotionalState(user_key=user_key)
@@ -266,7 +268,7 @@ class UserStateManager:
         try:
             # 验证状态
             if not state.is_valid():
-                print(f"警告: 用户 {user_key} 的状态无效，尝试修复")
+                logger.warning(f"用户 {user_key} 的状态无效，尝试修复")
                 state.repair()
             
             # 更新缓存
@@ -279,7 +281,7 @@ class UserStateManager:
                 
                 # 检查脏键数量限制
                 if len(self.dirty_keys) >= self.config.max_dirty_keys:
-                    print(f"脏键达到限制 ({len(self.dirty_keys)})，触发强制保存")
+                    logger.info(f"脏键达到限制 ({len(self.dirty_keys)})，触发强制保存")
                     await self.force_save()
             
             # 更新反向索引
@@ -291,7 +293,7 @@ class UserStateManager:
                     pass
             
         except Exception as e:
-            print(f"更新用户状态失败 {user_key}: {e}")
+            logger.error(f"更新用户状态失败 {user_key}: {e}")
             self.stats['errors'] += 1
     
     async def force_save(self):
@@ -316,9 +318,9 @@ class UserStateManager:
                 if state is not None:
                     states_to_save[user_key] = state
                 else:
-                    print(f"警告: 脏键 {user_key} 不在缓存中")
+                    logger.warning(f"脏键 {user_key} 不在缓存中")
             except Exception as e:
-                print(f"获取脏键状态失败 {user_key}: {e}")
+                logger.error(f"获取脏键状态失败 {user_key}: {e}")
                 failed_keys.append(user_key)
         
         if states_to_save:
@@ -331,17 +333,17 @@ class UserStateManager:
                 self.save_count += 1
                 self.stats['state_saves'] += len(states_to_save)
                 
-                print(f"保存了 {len(states_to_save)} 个更新的用户状态，耗时 {save_time:.3f}s")
+                logger.info(f"保存了 {len(states_to_save)} 个更新的用户状态，耗时 {save_time:.3f}s")
                 
             except Exception as e:
-                print(f"保存用户状态失败: {e}")
+                logger.error(f"保存用户状态失败: {e}")
                 self.stats['errors'] += 1
                 # 把失败的键加回脏键集合
                 async with self.dirty_lock:
                     self.dirty_keys.update(dirty_keys)
         
         if failed_keys:
-            print(f"{len(failed_keys)} 个键保存失败")
+            logger.error(f"{len(failed_keys)} 个键保存失败")
     
     def resolve_user_key(self, user_input: str, session_based: bool) -> str:
         """解析用户标识符"""
@@ -366,7 +368,7 @@ class UserStateManager:
         await self.repository.save_all_user_states({})
         self.user_id_index.clear()
         
-        print("已清空所有用户数据")
+        logger.info("已清空所有用户数据")
     
     async def get_stats(self) -> Dict[str, Any]:
         """获取管理器统计信息"""
@@ -394,7 +396,7 @@ class UserStateManager:
     
     async def close(self):
         """关闭管理器"""
-        print("正在关闭用户状态管理器...")
+        logger.info("正在关闭用户状态管理器...")
         
         # 取消监控任务
         if self.monitor_task:
@@ -420,9 +422,9 @@ class UserStateManager:
         
         # 打印统计信息
         stats = await self.get_stats()
-        print(f"用户状态管理器关闭完成，统计: {stats['user_manager']}")
+        logger.info(f"用户状态管理器关闭完成，统计: {stats['user_manager']}")
         
-        print("用户状态管理器已关闭")
+        logger.info("用户状态管理器已关闭")
 
 class RankingManager:
     """排行榜管理器 - 优化版本"""
@@ -464,7 +466,7 @@ class RankingManager:
                         state.stats.total_count
                     ))
                 except (AttributeError, TypeError) as e:
-                    print(f"用户 {user_key} 数据格式错误: {e}")
+                    logger.error(f"用户 {user_key} 数据格式错误: {e}")
                     continue
             
             if not averages:
@@ -497,7 +499,7 @@ class RankingManager:
             return entries
             
         except Exception as e:
-            print(f"获取排行榜失败: {e}")
+            logger.error(f"获取排行榜失败: {e}")
             return []
     
     def _format_user_display(self, user_key: str) -> str:
@@ -535,10 +537,10 @@ class RankingManager:
                     await self.get_enhanced_ranking(limit, reverse)
             
             self._last_cache_warm = current_time
-            print("排行榜缓存预热完成")
+            logger.info("排行榜缓存预热完成")
             
         except Exception as e:
-            print(f"缓存预热失败: {e}")
+            logger.error(f"缓存预热失败: {e}")
     
     async def get_ranking_stats(self) -> Dict[str, Any]:
         """获取排行榜统计信息"""
@@ -581,7 +583,7 @@ class RankingManager:
             }
             
         except Exception as e:
-            print(f"获取排行榜统计失败: {e}")
+            logger.error(f"获取排行榜统计失败: {e}")
             return {}
 
 class SmartUpdateManager:

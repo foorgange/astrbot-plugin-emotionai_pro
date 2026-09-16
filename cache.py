@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 import sys
 
+from astrbot.api import logger
+
 from .constants import CacheConstants, TimeConstants
 from .models import CacheStats
 
@@ -18,7 +20,7 @@ try:
     XXHASH_AVAILABLE = True
 except ImportError:
     XXHASH_AVAILABLE = False
-    print("警告: xxhash未安装，使用内置哈希函数")
+    logger.warning("xxhash未安装，使用内置哈希函数")
 
 class LRUCacheShard:
     """LRU缓存分片 - 增强版本"""
@@ -279,8 +281,8 @@ class ShardedTTLCache:
         if getattr(self, "_hash_fallback_warned", False):
             return
         self._hash_fallback_warned = True
-        print(
-            f"警告: 分片哈希失败，已降级到备用哈希实现（仅提示一次）: {error!r}"
+        logger.warning(
+            f"分片哈希失败，已降级到备用哈希实现（仅提示一次）: {error!r}"
         )
     
     def _record_access_pattern(self, key: str):
@@ -392,12 +394,12 @@ class ShardedTTLCache:
                     await asyncio.sleep(TimeConstants.ONE_MINUTE * 5)  # 5分钟清理一次
                     result = await self.cleanup_all_expired()
                     if result['total_cleaned'] > 0:
-                        print(f"缓存清理: 移除了 {result['total_cleaned']} 个过期条目，"
+                        logger.info(f"缓存清理: 移除了 {result['total_cleaned']} 个过期条目，"
                               f"释放 {result['total_bytes_freed'] / 1024:.1f} KB")
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"缓存清理任务错误: {e}")
+                    logger.error(f"缓存清理任务错误: {e}")
                     await asyncio.sleep(TimeConstants.ONE_MINUTE)  # 出错后等待1分钟
         
         self.cleanup_task = asyncio.create_task(cleanup_loop())
@@ -411,15 +413,15 @@ class ShardedTTLCache:
                     stats = await self.get_stats()
                     
                     if stats['hit_rate'] < 50:
-                        print(f"缓存警告: 命中率较低 ({stats['hit_rate']:.1f}%)")
+                        logger.warning(f"缓存警告: 命中率较低 ({stats['hit_rate']:.1f}%)")
                     
                     if stats['memory_usage']['usage_percent'] > 80:
-                        print(f"缓存警告: 内存使用率高 ({stats['memory_usage']['usage_percent']:.1f}%)")
+                        logger.warning(f"缓存警告: 内存使用率高 ({stats['memory_usage']['usage_percent']:.1f}%)")
                     
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"缓存监控任务错误: {e}")
+                    logger.error(f"缓存监控任务错误: {e}")
                     await asyncio.sleep(TimeConstants.ONE_MINUTE)
         
         self.monitor_task = asyncio.create_task(monitor_loop())
@@ -445,7 +447,7 @@ class ShardedTTLCache:
         # 清理所有缓存
         await self.clear()
         
-        print("缓存系统已安全关闭")
+        logger.info("缓存系统已安全关闭")
 
     async def get_shard_distribution(self) -> Dict[str, Any]:
         """获取分片分布情况"""

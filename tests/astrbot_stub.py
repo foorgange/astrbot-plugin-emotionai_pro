@@ -11,13 +11,63 @@ def _install():
         return
 
     # ---- astrbot.api ----
+    class _RecordingLogger:
+        """记录型 logger 桩。
+
+        为什么不是 `SimpleNamespace(info=lambda *a: None, ...)` 这种纯 no-op：
+            插件原先大量用 `print()` 打日志，测试靠
+            `contextlib.redirect_stdout` 断言"打了几次"。
+            上架规则要求 print 必须改成 `from astrbot.api import logger`
+            （内置 logging 与 print 都禁止），于是那些测试再也抓不到东西。
+            给桩加一个 records 列表，测试可以直接断言"打了什么、打了几次"，
+            同时 no-op 语义不变（不会往真实 stdout 写）。
+
+        注意：`api.logger` 是所有插件模块共享的**同一个**对象，
+        所以断言前要么先 `clear()`，要么用 before/after 切片比较。
+        """
+
+        def __init__(self, name="astrbot"):
+            self.name = name
+            self.records = []
+
+        def _add(self, level, msg, *args, **kwargs):
+            self.records.append((level, msg))
+
+        def debug(self, msg, *a, **k):
+            self._add("debug", msg)
+
+        def info(self, msg, *a, **k):
+            self._add("info", msg)
+
+        def warning(self, msg, *a, **k):
+            self._add("warning", msg)
+
+        def error(self, msg, *a, **k):
+            self._add("error", msg)
+
+        def critical(self, msg, *a, **k):
+            self._add("critical", msg)
+
+        def exception(self, msg, *a, **k):
+            self._add("exception", msg)
+
+        # ---- 测试辅助 ----
+        def clear(self):
+            self.records.clear()
+
+        def count(self, mark, level=None):
+            """包含 mark 的记录条数（可按级别过滤）"""
+            return sum(
+                1 for lv, m in self.records
+                if mark in str(m) and (level is None or lv == level)
+            )
+
+        def texts(self, level=None):
+            return [str(m) for lv, m in self.records
+                    if level is None or lv == level]
+
     api = types.ModuleType("astrbot.api")
-    api.logger = types.SimpleNamespace(
-        info=lambda *a, **k: None,
-        warning=lambda *a, **k: None,
-        error=lambda *a, **k: None,
-        debug=lambda *a, **k: None,
-    )
+    api.logger = _RecordingLogger()
 
     class AstrBotConfig(dict):
         def update(self, *args, **kwargs):

@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.15
+# EmotionAI Pro - 融合版情感智能插件 v4.0.17
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -13,6 +13,32 @@
 ---
 
 ## 更新日志
+
+### v4.0.17（日志规范合规：全面改用 AstrBot 官方 logger）
+
+**只改日志的输出方式，业务逻辑一行未动。**
+
+1. **问题**
+   插件市场上架规则明确禁止插件使用 Python 内置 `logging` 模块和 `print()`
+   输出日志，必须统一走 `from astrbot.api import logger`。本插件此前存在：
+   - `health.py`、`schema_validator.py` 用 `logging.getLogger(__name__)`
+   - `storage.py`、`emotion_expert.py`、`config_manager.py`、`managers.py`、
+     `memory.py`、`models.py`、`cache.py`、`migration.py`、
+     `command_handlers.py`、`global_mood.py` 共 10 个文件、182 处 `print()`
+
+2. **方案**
+   - `health.py`、`schema_validator.py`：内置 `logging` 换成
+     `from astrbot.api import logger`
+   - 其余 10 个文件的 182 处 `print()` 按语义分级改写成
+     `logger.info` / `logger.warning` / `logger.error`，并各自补上 logger 导入
+   - 顺带去掉消息开头与级别重复的「警告: 」/「错误: 」前缀，
+     避免打出 `WARN 警告: xxx` 这种重复
+   - `main.py` 原本就已合规，未改动
+
+3. **验证**
+   - 项目根目录 `print(` 与 `logging` 引用均已清零
+   - 12 个改动文件逐一通过 `compile()` 语法自检
+   - 全部 207 项单测通过
 
 ### v4.0.15（缓存哈希加固 + bot_name 自动提取「静默失效」修复）
 

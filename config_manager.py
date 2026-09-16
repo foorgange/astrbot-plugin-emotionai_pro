@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 import hashlib
 
+from astrbot.api import logger
+
 from .config import PluginConfig
 
 class ConfigManager:
@@ -25,12 +27,12 @@ class ConfigManager:
         # 确保配置文件存在
         self._ensure_config_file()
         
-        print(f"配置管理器初始化完成，配置文件: {config_path}")
+        logger.info(f"配置管理器初始化完成，配置文件: {config_path}")
     
     def _ensure_config_file(self):
         """确保配置文件存在"""
         if not self.config_path.exists():
-            print(f"配置文件不存在，创建默认配置: {self.config_path}")
+            logger.info(f"配置文件不存在，创建默认配置: {self.config_path}")
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             self._save_config(self.current_config)
     
@@ -51,13 +53,13 @@ class ConfigManager:
             self._last_modified = time.time()
             
         except Exception as e:
-            print(f"保存配置失败: {e}")
+            logger.error(f"保存配置失败: {e}")
     
     def add_change_listener(self, callback: Callable):
         """添加配置变更监听器"""
         if callback not in self._listeners:
             self._listeners.append(callback)
-            print(f"添加配置变更监听器: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
+            logger.info(f"添加配置变更监听器: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
     
     def remove_change_listener(self, callback: Callable):
         """移除配置变更监听器"""
@@ -67,10 +69,10 @@ class ConfigManager:
     async def start_watching(self, interval: float = 2.0):
         """开始监控配置文件变化"""
         if self._watch_task:
-            print("配置监控任务已在运行")
+            logger.info("配置监控任务已在运行")
             return
         
-        print(f"开始监控配置文件变化，检查间隔: {interval}秒")
+        logger.info(f"开始监控配置文件变化，检查间隔: {interval}秒")
         
         async def watch_loop():
             while True:
@@ -81,13 +83,13 @@ class ConfigManager:
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"配置监控循环错误: {e}")
+                    logger.error(f"配置监控循环错误: {e}")
                     self._error_count += 1
                     self._last_error_time = time.time()
                     
                     # 错误过多时暂停
                     if self._error_count > 10 and time.time() - self._last_error_time < 60:
-                        print("配置监控错误过多，暂停60秒")
+                        logger.error("配置监控错误过多，暂停60秒")
                         await asyncio.sleep(60)
                     else:
                         await asyncio.sleep(5)
@@ -97,7 +99,7 @@ class ConfigManager:
     async def _check_for_changes(self):
         """检查配置变化"""
         if not self.config_path.exists():
-            print(f"配置文件不存在: {self.config_path}")
+            logger.warning(f"配置文件不存在: {self.config_path}")
             return
         
         try:
@@ -110,7 +112,7 @@ class ConfigManager:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 if not content.strip():
-                    print("配置文件为空")
+                    logger.warning("配置文件为空")
                     return
                 
                 new_config_data = json.loads(content)
@@ -123,7 +125,7 @@ class ConfigManager:
                 self._last_modified = current_mtime
                 return
             
-            print(f"检测到配置变化，重新加载配置")
+            logger.info(f"检测到配置变化，重新加载配置")
             
             # 重新加载配置
             await self._reload_config(new_config_data)
@@ -134,9 +136,9 @@ class ConfigManager:
             self._error_count = 0
             
         except json.JSONDecodeError as e:
-            print(f"配置文件JSON格式错误: {e}")
+            logger.error(f"配置文件JSON格式错误: {e}")
         except Exception as e:
-            print(f"检查配置变化失败: {e}")
+            logger.error(f"检查配置变化失败: {e}")
             self._error_count += 1
     
     async def _reload_config(self, new_config_data: Dict[str, Any]):
@@ -150,11 +152,11 @@ class ConfigManager:
                 
                 # 验证新配置
                 if not self._validate_config(new_config):
-                    print("新配置验证失败，保持当前配置")
+                    logger.error("新配置验证失败，保持当前配置")
                     return
                 
                 # 通知监听器（在更新当前配置之前）
-                print(f"通知 {len(self._listeners)} 个监听器配置变更")
+                logger.info(f"通知 {len(self._listeners)} 个监听器配置变更")
                 
                 listener_tasks = []
                 for listener in self._listeners:
@@ -168,25 +170,25 @@ class ConfigManager:
                             task = loop.run_in_executor(None, listener, old_config, new_config)
                             listener_tasks.append(task)
                     except Exception as e:
-                        print(f"配置变更监听器调用失败: {e}")
+                        logger.error(f"配置变更监听器调用失败: {e}")
                 
                 # 等待所有监听器完成
                 if listener_tasks:
                     try:
                         await asyncio.gather(*listener_tasks, return_exceptions=True)
                     except Exception as e:
-                        print(f"等待监听器完成时出错: {e}")
+                        logger.error(f"等待监听器完成时出错: {e}")
                 
                 # 更新当前配置
                 self.current_config = new_config
                 
-                print("配置热重载完成")
+                logger.info("配置热重载完成")
                 
                 # 记录配置差异
                 self._log_config_changes(old_config, new_config)
                 
         except Exception as e:
-            print(f"配置重载失败: {e}")
+            logger.error(f"配置重载失败: {e}")
             raise
     
     def _validate_config(self, config: PluginConfig) -> bool:
@@ -194,31 +196,31 @@ class ConfigManager:
         try:
             # 检查基本约束
             if config.favour_min >= config.favour_max:
-                print(f"配置验证失败: favour_min ({config.favour_min}) >= favour_max ({config.favour_max})")
+                logger.error(f"配置验证失败: favour_min ({config.favour_min}) >= favour_max ({config.favour_max})")
                 return False
             
             if config.intimacy_min >= config.intimacy_max:
-                print(f"配置验证失败: intimacy_min ({config.intimacy_min}) >= intimacy_max ({config.intimacy_max})")
+                logger.error(f"配置验证失败: intimacy_min ({config.intimacy_min}) >= intimacy_max ({config.intimacy_max})")
                 return False
             
             if config.change_min >= config.change_max:
-                print(f"配置验证失败: change_min ({config.change_min}) >= change_max ({config.change_max})")
+                logger.error(f"配置验证失败: change_min ({config.change_min}) >= change_max ({config.change_max})")
                 return False
             
             if config.force_update_interval <= 0:
-                print(f"配置验证失败: force_update_interval ({config.force_update_interval}) <= 0")
+                logger.error(f"配置验证失败: force_update_interval ({config.force_update_interval}) <= 0")
                 return False
             
             # 检查管理员列表格式
             for qq in config.admin_qq_list:
                 if not isinstance(qq, str) or not qq.isdigit():
-                    print(f"配置验证失败: 无效的管理员QQ号格式: {qq}")
+                    logger.error(f"配置验证失败: 无效的管理员QQ号格式: {qq}")
                     return False
             
             return True
             
         except Exception as e:
-            print(f"配置验证过程中出错: {e}")
+            logger.error(f"配置验证过程中出错: {e}")
             return False
     
     def _log_config_changes(self, old_config: PluginConfig, new_config: PluginConfig):
@@ -237,11 +239,11 @@ class ConfigManager:
                 })
         
         if changes:
-            print("配置变化详情:")
+            logger.info("配置变化详情:")
             for change in changes:
-                print(f"  {change['key']}: {change['old']} -> {change['new']}")
+                logger.info(f"  {change['key']}: {change['old']} -> {change['new']}")
         else:
-            print("没有检测到配置值变化")
+            logger.info("没有检测到配置值变化")
     
     async def update_config(self, updates: Dict[str, Any]):
         """更新配置"""
@@ -275,7 +277,7 @@ class ConfigManager:
                             task = loop.run_in_executor(None, listener, old_config, new_config)
                             listener_tasks.append(task)
                     except Exception as e:
-                        print(f"配置变更监听器调用失败: {e}")
+                        logger.error(f"配置变更监听器调用失败: {e}")
                 
                 # 等待所有监听器完成
                 if listener_tasks:
@@ -284,12 +286,12 @@ class ConfigManager:
                 # 更新当前配置
                 self.current_config = new_config
                 
-                print(f"配置更新成功: {len(updates)} 个字段已更新")
+                logger.info(f"配置更新成功: {len(updates)} 个字段已更新")
                 
                 return True
                 
             except Exception as e:
-                print(f"更新配置失败: {e}")
+                logger.error(f"更新配置失败: {e}")
                 return False
     
     async def get_config_snapshot(self) -> Dict[str, Any]:
@@ -311,18 +313,18 @@ class ConfigManager:
     async def stop_watching(self):
         """停止监控"""
         if self._watch_task:
-            print("停止配置监控任务...")
+            logger.info("停止配置监控任务...")
             self._watch_task.cancel()
             try:
                 await self._watch_task
             except asyncio.CancelledError:
                 pass
             self._watch_task = None
-            print("配置监控任务已停止")
+            logger.info("配置监控任务已停止")
     
     async def refresh(self):
         """手动刷新配置"""
-        print("手动刷新配置...")
+        logger.info("手动刷新配置...")
         await self._check_for_changes()
     
     def get_status(self) -> Dict[str, Any]:

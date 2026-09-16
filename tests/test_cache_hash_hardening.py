@@ -14,9 +14,7 @@ v4.0.10 只修了「未 encode」这一个具体原因。本文件锁定的是**
 强制让哈希炸掉 —— 如果哪天有人把 try/except 去掉，这些用例会立刻失败。
 """
 import asyncio
-import contextlib
 import hashlib
-import io
 import os
 import sys
 import unittest
@@ -136,16 +134,26 @@ class TestHashFailureDoesNotEscape(_CacheCase):
 
 
 class TestWarningIsNotSpammy(_CacheCase):
-    """降级提示只打一次，避免每条缓存访问刷屏"""
+    """降级提示只打一次，避免每条缓存访问刷屏
 
-    def test_warning_printed_only_once(self):
+    ⚠️ v4.0.17 起断言对象从 stdout 换成了 logger。
+    原因：上架规则要求插件不得用 `print()` / 内置 `logging` 打日志，
+    必须走 `from astrbot.api import logger`。原先这里用
+    `contextlib.redirect_stdout` 抓 `print` 的输出，改完就抓不到任何东西了
+    —— 那种情况下 `assertEqual(count, 1)` 会退化成 `0 == 1` 恒失败，
+    或者反过来如果有人把断言放宽，就会变成**永远通过的假测试**。
+    所以这里直接 patch 模块级 logger，断言"warning 恰好被调用一次"。
+    """
+
+    def test_warning_logged_only_once(self):
         async def body(c):
-            buf = io.StringIO()
-            with self._broken_xxhash():
-                with contextlib.redirect_stdout(buf):
+            with patch.object(cache_mod, "logger") as fake_logger:
+                with self._broken_xxhash():
                     for i in range(10):
                         c._get_shard(f"k{i}")
-            self.assertEqual(buf.getvalue().count(WARN_MARK), 1)
+            self.assertEqual(fake_logger.warning.call_count, 1)
+            args, _kwargs = fake_logger.warning.call_args
+            self.assertIn(WARN_MARK, str(args[0]))
 
         self._with_cache(body)
 
@@ -154,11 +162,10 @@ class TestWarningIsNotSpammy(_CacheCase):
             self.skipTest("本环境无 xxhash")
 
         async def body(c):
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with patch.object(cache_mod, "logger") as fake_logger:
                 for i in range(10):
                     c._get_shard(f"k{i}")
-            self.assertNotIn(WARN_MARK, buf.getvalue())
+            self.assertEqual(fake_logger.warning.call_count, 0)
 
         self._with_cache(body)
 

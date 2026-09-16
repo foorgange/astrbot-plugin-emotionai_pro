@@ -4,12 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Dict, Any
 
+from astrbot.api import logger
+
 async def migrate_old_data(old_data_path: Path, new_repository):
     """迁移旧数据到新格式"""
     old_user_file = old_data_path / "user_emotion_data.json"
     
     if not old_user_file.exists():
-        print("没有找到旧数据文件")
+        logger.warning("没有找到旧数据文件")
         return
     
     try:
@@ -25,10 +27,10 @@ async def migrate_old_data(old_data_path: Path, new_repository):
                     await new_repository.save_user_state(user_key, new_state)
                     migrated_count += 1
         
-        print(f"成功迁移 {migrated_count} 个用户数据")
+        logger.info(f"成功迁移 {migrated_count} 个用户数据")
         
     except Exception as e:
-        print(f"数据迁移失败: {e}")
+        logger.error(f"数据迁移失败: {e}")
 
 def _convert_to_new_format(user_key: str, old_data: Dict[str, Any]):
     """将旧数据格式转换为新格式"""
@@ -87,5 +89,5 @@ def _convert_to_new_format(user_key: str, old_data: Dict[str, Any]):
         )
     
     except Exception as e:
-        print(f"转换用户 {user_key} 数据失败: {e}")
+        logger.error(f"转换用户 {user_key} 数据失败: {e}")
         return None

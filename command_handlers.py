@@ -4,6 +4,7 @@ import asyncio
 from typing import Dict, Any, Optional, List, AsyncGenerator
 from dataclasses import asdict
 
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import StarTools
 
@@ -346,9 +347,9 @@ class AdminCommandHandler(BaseCommandHandler):
                 raw_config.update({"global_privacy_level": privacy_level})
                 await raw_config.save_config_async()
         except Exception as e:
-            print(f"隐私级别配置落盘失败: {e}")
+            logger.error(f"隐私级别配置落盘失败: {e}")
 
-        print(f"管理员更新全局隐私级别: {level_names[privacy_level]}")
+        logger.info(f"管理员更新全局隐私级别: {level_names[privacy_level]}")
         yield event.plain_result(f"【全局设置】隐私级别已设置为: {level_names[privacy_level]}（全员生效）")
         event.stop_event()
     
@@ -453,7 +454,7 @@ class AdminCommandHandler(BaseCommandHandler):
         # 重置所有数据
         await self.user_manager.clear_all_data()
         
-        print("管理员执行了插件重置操作")
+        logger.info("管理员执行了插件重置操作")
         
         yield event.plain_result("【成功】插件所有数据已重置")
         event.stop_event()

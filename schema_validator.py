@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 from jsonschema import validate, ValidationError
-import logging
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 class ConfigValidator:
     """配置文件验证器"""
