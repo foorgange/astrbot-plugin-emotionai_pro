@@ -34,7 +34,7 @@ from .global_mood import (
 # 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
 _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECASE)
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.10")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.11")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -647,10 +647,22 @@ class EmotionAIProPlugin(Star):
         except Exception as e:
             logger.warning(f"获取关系上下文失败: {e}")
             relationship_context = "暂无长期互动记录"
+
+        # 注入文本同样要过 AI 字样清洗（与状态展示、描述写入保持一致）。
+        # 长期记忆里的关系描述是模型生成的，可能残留 "AI" 字样；直接注入会被人设
+        # 判定为身份冲突。bot_name 未解析时 _sanitize_ai_text 是安全的空操作。
+        tone_instruction = self._sanitize_ai_text(tone_instruction)
+        relationship_context = self._sanitize_ai_text(relationship_context)
     
+        # ⚠️ 人设一致性：此处严禁出现「你是一个……AI 助手」这类**身份断言**。
+        # 本插件是通用件，而相当多的人设（例如「永雏塔菲」）在 system_prompt 里
+        # 明确写了「你不是 AI / 不要承认自己是 AI」。在注入文本里自称 AI 会与人设
+        # 直接冲突，导致模型人格漂移（说话开始像通用助手而不是角色本身）。
+        # 因此这里只描述「这是一份情感状态参考」，并显式要求保持既有身份与风格不变。
         return f"""
 【机密情感系统 - 主对话模式】
-你是一个具有丰富情感的AI助手，请根据以下情感状态调整你的回应风格。
+以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，
+在此基础上自然地调整语气、用词与情绪倾向。
 
 {relationship_context}
 
