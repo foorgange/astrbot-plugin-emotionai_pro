@@ -216,14 +216,20 @@ class ShardedTTLCache:
     
     def _get_shard(self, key: str) -> LRUCacheShard:
         """根据键获取对应的分片 - 使用更好的哈希分布"""
+        # 统一先编码成 bytes：
+        # xxhash>=4.0 起不再接受 str，直接传字符串会抛
+        # TypeError: Strings must be encoded before hashing，导致分片缓存整体不可用。
+        # 在 xxhash 3.x 上 xxh64(str) 与 xxh64(bytes) 结果一致（已实测同 digest），
+        # 因此本改动对所有版本都是行为等价的。
+        raw = key.encode("utf-8") if isinstance(key, str) else key
+
         if XXHASH_AVAILABLE:
             # 使用xxhash，更快且分布更好
-            hash_value = xxhash.xxh64(key).intdigest()
+            hash_value = xxhash.xxh64(raw).intdigest()
         else:
             # 使用Python内置哈希，但加盐避免冲突
-            hash_obj = hashlib.md5(key.encode())
-            hash_value = int(hash_obj.hexdigest()[:8], 16)
-        
+            hash_value = int(hashlib.md5(raw).hexdigest()[:8], 16)
+
         shard_index = hash_value % self.shard_count
         return self.shards[shard_index]
     

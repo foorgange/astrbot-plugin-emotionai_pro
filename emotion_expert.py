@@ -29,8 +29,14 @@ class EmotionAnalysisExpert:
         self._llm_failures = 0  # 连续失败次数
 
     async def analyze_and_update_emotion(self, user_key: str, user_message: str, ai_response: str,
-                                       current_state: EnhancedEmotionalState) -> Dict[str, Any]:
-        """情感分析入口 - 增强异常处理"""
+                                       current_state: EnhancedEmotionalState,
+                                       umo: str = None) -> Dict[str, Any]:
+        """情感分析入口 - 增强异常处理
+
+        umo（unified_msg_origin）用于解析该会话实际使用的 provider：
+        不传时 AstrBot 会退回读**全局** cmd_config，可能拿到与当前档案
+        （如 WebUI 里的 ds-flash）不一致的 provider。
+        """
         print(f"情感分析专家被调用: user_key={user_key}, message_length={len(user_message)}")
     
         # 生成更精确的缓存键，避免重复分析相同对话
@@ -48,7 +54,7 @@ class EmotionAnalysisExpert:
         try:
             # 首先尝试使用真正的LLM分析
             if self._llm_available:
-                analysis_result = await self._call_real_llm_with_retry(user_message, ai_response, current_state)
+                analysis_result = await self._call_real_llm_with_retry(user_message, ai_response, current_state, umo)
             
             # 如果LLM分析成功
             if analysis_result:
@@ -90,11 +96,12 @@ class EmotionAnalysisExpert:
         return updates
 
     async def _call_real_llm_with_retry(self, user_message: str, ai_response: str, 
-                                      state: EnhancedEmotionalState) -> Optional[str]:
+                                      state: EnhancedEmotionalState,
+                                      umo: str = None) -> Optional[str]:
         """带重试的LLM调用"""
         for attempt in range(self.llm_retry_count):
             try:
-                result = await self._call_real_llm(user_message, ai_response, state)
+                result = await self._call_real_llm(user_message, ai_response, state, umo)
                 if result and len(result) > 10:  # 确保有足够的返回内容
                     return result
                 else:
@@ -111,7 +118,9 @@ class EmotionAnalysisExpert:
         print(f"经过 {self.llm_retry_count} 次尝试，LLM调用失败")
         return None
 
-    async def _call_real_llm(self, user_message: str, ai_response: str, state: EnhancedEmotionalState) -> Optional[str]:
+    async def _call_real_llm(self, user_message: str, ai_response: str,
+                             state: EnhancedEmotionalState,
+                             umo: str = None) -> Optional[str]:
         """调用真正的LLM进行情感分析"""
         if not self.context:
             print("没有context，无法调用LLM")
@@ -123,7 +132,7 @@ class EmotionAnalysisExpert:
             return None
         
         # 确定目标提供商
-        target_provider = self._find_target_provider(providers)
+        target_provider = self._find_target_provider(providers, umo)
         if not target_provider:
             print("找不到目标LLM提供商")
             return None
@@ -139,37 +148,111 @@ class EmotionAnalysisExpert:
             print(f"LLM调用执行失败: {e}")
             return None
 
-    def _find_target_provider(self, providers: List) -> Optional[Any]:
-        """查找目标LLM提供商"""
-        # 优先使用配置的辅助LLM提供商
-        if self.secondary_llm_provider:
-            target_name = self.secondary_llm_provider.lower()
-            for provider in providers:
-                provider_name = self._get_provider_name(provider).lower()
-                if target_name in provider_name:
-                    print(f"找到配置的辅助LLM提供商: {self._get_provider_name(provider)}")
-                    return provider
-        
-        # 其次查找deepseek_default
-        for provider in providers:
-            provider_name = self._get_provider_name(provider).lower()
-            if 'deepseek' in provider_name or 'default' in provider_name:
-                print(f"找到DeepSeek提供商: {self._get_provider_name(provider)}")
-                return provider
-        
-        # 使用第一个可用的
-        if providers:
-            print(f"使用第一个可用提供商: {self._get_provider_name(providers[0])}")
-            return providers[0]
-        
-        return None
+    def _get_provider_meta(self, provider) -> Tuple[str, str]:
+        """读取 provider 的 (id, model)。
+
+        AstrBot 的 Provider 并没有 `name` 属性，元信息要通过 meta() 获取。
+        早期实现直接读 provider.name，取不到就退化成类名（如
+        ProviderOpenAIOfficial），于是所有按名称匹配 provider 的逻辑全部失效，
+        永远落到 providers[0]。这里做兼容读取，并保证任何情况下都不抛异常。
+        """
+        pid = ""
+        model = ""
+        meta = getattr(provider, "meta", None)
+        try:
+            if callable(meta):
+                meta = meta()
+            if meta is not None:
+                pid = str(getattr(meta, "id", "") or "")
+                model = str(getattr(meta, "model", "") or "")
+        except Exception as e:
+            print(f"读取 provider 元信息失败: {e}")
+        if not pid:
+            # 兼容非标准对象：退化为 name 属性或类名，仅用于日志与兜底
+            pid = str(getattr(provider, "name", "") or "")
+        return pid, model
 
     def _get_provider_name(self, provider) -> str:
-        """获取提供商名称"""
-        name = getattr(provider, 'name', '')
-        if not name:
-            name = getattr(provider, '__class__', '').__name__
-        return name or '未知'
+        """获取提供商名称（用于日志输出）"""
+        pid, model = self._get_provider_meta(provider)
+        if pid:
+            return pid
+        if model:
+            return model
+        return getattr(provider, "__class__", type(provider)).__name__ or "未知"
+
+    def _get_main_provider(self, umo: str = None) -> Optional[Any]:
+        """获取当前会话的主 LLM；取不到时返回 None（不抛异常）
+
+        必须带上 umo：AstrBot 的 get_using_provider(umo=None) 会回退到读全局
+        cmd_config.json 的 default_provider_id，而当前生效的是 WebUI 里的
+        配置档案（如 ds-flash），两者可能指向完全不同的 provider。
+        """
+        if self.context is None:
+            return None
+        try:
+            getter = getattr(self.context, "get_using_provider", None)
+            if not callable(getter):
+                return None
+            try:
+                return getter(umo)
+            except TypeError:
+                # 兼容不接受参数的旧版签名
+                return getter()
+        except Exception as e:
+            print(f"获取主LLM失败，回退到名称匹配: {e}")
+            return None
+
+    def _find_target_provider(self, providers: List, umo: str = None) -> Optional[Any]:
+        """按优先级选择情感分析所使用的 provider
+
+        1. 配置了 secondary_llm_provider → 按 id / model 匹配
+        2. 留空 → 使用当前会话的主 LLM
+           （与 _conf_schema.json 中「留空则使用主LLM」的说明保持一致）
+        3. 主 LLM 不可用 → 名称含 deepseek / default 的 provider
+        4. 兜底 → 第一个可用 provider
+        """
+        if not providers:
+            return None
+
+        # 1. 显式配置的辅助 LLM
+        if self.secondary_llm_provider:
+            target = self.secondary_llm_provider.strip().lower()
+            if target:
+                for provider in providers:
+                    pid, model = self._get_provider_meta(provider)
+                    if target in pid.lower() or target in model.lower():
+                        print(f"找到配置的辅助LLM提供商: {pid}")
+                        return provider
+                print(f"未匹配到辅助LLM提供商 [{self.secondary_llm_provider}]，回退到主LLM")
+
+        # 2. 未配置 → 使用主 LLM
+        main_provider = self._get_main_provider(umo)
+        if main_provider is not None:
+            pid, _ = self._get_provider_meta(main_provider)
+            print(f"使用主LLM进行情感分析: {pid}")
+            return main_provider
+
+        # 3. 名称含 deepseek / default
+        for provider in providers:
+            pid, model = self._get_provider_meta(provider)
+            haystack = f"{pid} {model}".lower()
+            if "deepseek" in haystack or "default" in haystack:
+                print(f"找到DeepSeek提供商: {pid}")
+                return provider
+
+        # 4. 兜底：第一个可用的
+        pid, _ = self._get_provider_meta(providers[0])
+        print(f"使用第一个可用提供商: {pid}")
+        return providers[0]
+
+    def _target_model(self) -> Optional[str]:
+        """返回情感分析要指定的模型名；未配置时返回 None（沿用 provider 自身模型）。
+
+        早期实现完全没有使用 secondary_llm_model，该配置项形同虚设。
+        """
+        model = (self.secondary_llm_model or "").strip()
+        return model or None
 
     async def _execute_llm_call(self, provider, prompt: str) -> Optional[str]:
         """执行LLM调用 - 完整实现"""
@@ -184,7 +267,7 @@ class EmotionAnalysisExpert:
             if hasattr(provider, 'text_chat') and asyncio.iscoroutinefunction(provider.text_chat):
                 print(f"调用 {provider_name}.text_chat()")
                 result = await asyncio.wait_for(
-                    provider.text_chat(prompt),
+                    provider.text_chat(prompt, model=self._target_model()),
                     timeout=self.llm_timeout
                 )
                 text = self._extract_response_text(result)
@@ -213,7 +296,7 @@ class EmotionAnalysisExpert:
             # 尝试同步方法
             elif hasattr(provider, 'text_chat') and not asyncio.iscoroutinefunction(provider.text_chat):
                 print(f"调用同步方法 {provider_name}.text_chat()")
-                result = provider.text_chat(prompt)
+                result = provider.text_chat(prompt, model=self._target_model())
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
                     return text

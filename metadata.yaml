@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.9
+version: v4.0.10
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,29 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.10 修复内容（by foorgange）：
+
+  1. 修复 xxhash>=4.0 下分片缓存整体崩溃：_get_shard 直接把 str 传给
+     xxhash.xxh64()，新版 xxhash 会抛
+     TypeError: Strings must be encoded before hashing。现统一编码为 bytes，
+     且 xxhash 3.x 下 xxh64(str) 与 xxh64(bytes) 结果一致，行为等价。
+  2. 修复情感分析模型选择失效：读取 provider 元信息时用了并不存在的
+     provider.name，取不到就退化成类名（如 ProviderOpenAIOfficial），
+     导致 secondary_llm_provider 配置完全失效、且永远落到 providers[0]。
+     线上实测落到的是视觉模型 Qwen3-VL-30B，而非配置声明的 deepseek。
+     现改为读取 meta()，并在留空时按配置说明使用主 LLM。
+  3. 修复主 LLM 解析取错配置：调用 get_using_provider() 时未传 umo，
+     AstrBot 会退回读**全局** cmd_config.json 的 default_provider_id，
+     而实际生效的是 WebUI 里的配置档案（如 ds-flash），两者可能指向不同
+     provider。线上就因此拿到了一个已失效的 provider（400 Model is
+     unavailable），情感分析静默退化为关键词兜底。现从事件透传 umo。
+  4. secondary_llm_model 此前从未被使用（死配置），现通过
+     text_chat(model=...) 真正生效。
+  5. 测试：修复「模拟 xxhash 缺失」用例无效的问题——仅 pop sys.modules
+     无法阻止 reload 时重新导入；新增 21 项 provider 解析、umo 透传与
+     分片哈希回归测试，全量用例 126 项通过。
 
 
   v4.0.9 更新内容（by foorgange）：
