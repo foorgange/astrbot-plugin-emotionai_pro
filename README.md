@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.13
+# EmotionAI Pro - 融合版情感智能插件 v4.0.14
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -11,6 +11,52 @@
 ---
 
 ## 更新日志
+
+### v4.0.14（情感分析接入「带总时间预算的备选链」）
+
+**只改情感分析这条后台链路，不影响 AstrBot 主对话自身的退避重试机制。**
+
+1. **问题**
+   情感分析此前只选 **1 个** provider，然后对**同一个** provider 重试
+   `3 次 × 30 秒超时`，最坏约 **90 秒**才降级到本地兜底；而且主 provider
+   一旦不可用就完全没有冗余——8 层退避是主对话才有的待遇。
+
+2. **方案**（`emotion_expert.py`）
+   在 `emotion_llm_time_budget` 秒的总预算内，沿备选链依次尝试：
+
+   ```
+   辅助LLM → 会话主LLM → 当前配置文件的 fallback_chat_models → 其它 provider
+   （按 provider id 去重）
+   ```
+
+   最多尝试 `emotion_llm_max_providers` 个，**任一成功即返回**；
+   预算耗尽则降级到 `smart_fallback`。
+
+   单次时间片 `= min(30 秒, 预算 / 尝试个数)`，且不超过剩余预算——
+   因此单个挂住的模型不会吃掉全部预算。
+
+3. **新增配置项**（WebUI → 插件配置）
+
+   | 配置项 | 默认 | 范围 | 说明 |
+   |---|---|---|---|
+   | `emotion_llm_time_budget` | `45.0` | 10~300 秒 | 总时间预算，超时即降级 |
+   | `emotion_llm_max_providers` | `3` | 1~10 | 预算内最多尝试几个模型 |
+
+   留空或非法值一律回退默认，不会导致插件加载失败。
+
+4. **只读复用你已有的回退配置**
+   备选链第 3 段直接读取当前会话配置文件的
+   `provider_settings.fallback_chat_models`，**不必再配置一遍**。
+   全程只读，不修改任何 `provider` / `provider_settings`。
+
+5. **兼容性**
+   只有一个候选 provider 时，保留原有的「同一 provider 重试 3 次」语义
+   （含退避等待）；`_execute_llm_call` 不传 `timeout` 的旧调用方式继续可用。
+
+6. **测试**
+   新增 34 项回归测试（`tests/test_llm_fallback_budget.py`）：备选链顺序与
+   去重、预算封顶（挂住的模型不得吃满预算）、失败自动切换、单候选重试、
+   配置项边界、`provider_settings` 只读性。全量用例 **190 项通过**。
 
 ### v4.0.13（`/查看好感` 输出重复「用户」字样修复）
 

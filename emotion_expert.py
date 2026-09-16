@@ -14,9 +14,13 @@ from .constants import TimeConstants
 class EmotionAnalysisExpert:
     """情感分析专家 - 完全修复版本"""
 
+    # 单次尝试的最低时间片：剩余预算低于此值就不再发起新的尝试
+    MIN_SLICE = 3.0
+
     def __init__(self, cache: ShardedTTLCache, context=None,
                  secondary_llm_provider: str = None, secondary_llm_model: str = None,
-                 bot_name_provider=None):
+                 bot_name_provider=None, time_budget: float = 45.0,
+                 max_providers: int = 3):
         self.cache = cache
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
@@ -27,6 +31,19 @@ class EmotionAnalysisExpert:
         self.llm_retry_delay = 1.0
         self._llm_available = True  # 跟踪LLM可用性
         self._llm_failures = 0  # 连续失败次数
+
+        # 情感分析的总时间预算（秒）：预算耗尽即放弃 LLM 分析，走本地 smart_fallback。
+        # 预算内按备选链依次尝试，最多 max_providers 个 provider。
+        # 这两个值只作用于「情感分析」这条链路，与 AstrBot 主对话的
+        # fallback_chat_models 退避机制互不影响（本插件对 provider 配置纯只读）。
+        try:
+            self.time_budget = max(self.MIN_SLICE, float(time_budget))
+        except (TypeError, ValueError):
+            self.time_budget = 45.0
+        try:
+            self.max_providers = max(1, int(max_providers))
+        except (TypeError, ValueError):
+            self.max_providers = 3
 
     async def analyze_and_update_emotion(self, user_key: str, user_message: str, ai_response: str,
                                        current_state: EnhancedEmotionalState,
@@ -98,35 +115,199 @@ class EmotionAnalysisExpert:
     async def _call_real_llm_with_retry(self, user_message: str, ai_response: str, 
                                       state: EnhancedEmotionalState,
                                       umo: str = None) -> Optional[str]:
-        """带重试的LLM调用"""
-        for attempt in range(self.llm_retry_count):
+        """在总时间预算内，沿备选链依次尝试各 provider。
+
+        旧实现是「同一个 provider 重试 llm_retry_count 次」，最坏
+        llm_retry_count × llm_timeout ≈ 90s 才降级，而且主 provider 一旦
+        不可用就完全没有冗余。现在改为：
+
+        1. 构造备选链（辅助LLM → 会话主LLM → 档案里的 fallback_chat_models
+           → 其它 provider，按 id 去重，见 `_build_provider_chain`）；
+        2. 在 `time_budget` 秒的总预算内，最多尝试 `max_providers` 次；
+        3. 单次时间片 = min(llm_timeout, 预算 / max_providers)，且不超过剩余预算；
+        4. 任一成功即返回；全部失败或预算耗尽则返回 None，由调用方降级到
+           smart_fallback。
+
+        ⚠️ 这里只「读」provider 实例与 provider_settings，不修改任何配置，
+        因此不会影响 AstrBot 主对话自身的退避重试机制。
+        """
+        chain = self._build_provider_chain(umo)
+        if not chain:
+            print("没有可用的LLM提供商")
+            return None
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.time_budget
+
+        attempts = list(chain[: self.max_providers])
+        if len(attempts) == 1:
+            # 只有一个候选时，保留原有的「同一 provider 重试」语义
+            attempts = attempts * max(1, min(self.llm_retry_count, self.max_providers))
+
+        # 单次时间片：预算均分给 max_providers 次尝试，且不超过 llm_timeout
+        slice_ = min(
+            self.llm_timeout,
+            max(self.MIN_SLICE, self.time_budget / self.max_providers),
+        )
+
+        prompt = self._build_emotion_analysis_prompt(user_message, ai_response, state)
+        print(
+            f"情感分析备选链: {[self._get_provider_name(p) for p in chain]} | "
+            f"预算 {self.time_budget:.0f}s, 最多 {len(attempts)} 次尝试, 每次 {slice_:.1f}s"
+        )
+
+        previous = None
+        for index, provider in enumerate(attempts, start=1):
+            remaining = deadline - loop.time()
+            if remaining <= self.MIN_SLICE:
+                print(f"情感分析时间预算耗尽（剩余 {remaining:.1f}s），停止尝试")
+                break
+
+            # 同一 provider 连续重试时保留退避；换 provider 则无需等待
+            if provider is previous and self.llm_retry_delay > 0:
+                if remaining > self.llm_retry_delay + self.MIN_SLICE:
+                    await asyncio.sleep(self.llm_retry_delay)
+            previous = provider
+
+            timeout = min(slice_, max(self.MIN_SLICE, deadline - loop.time()))
+            name = self._get_provider_name(provider)
+            print(f"情感分析尝试 [{index}/{len(attempts)}] provider={name} 超时={timeout:.1f}s")
+
             try:
-                result = await self._call_real_llm(user_message, ai_response, state, umo)
-                if result and len(result) > 10:  # 确保有足够的返回内容
-                    return result
-                else:
-                    print(f"LLM返回内容过短或为空: {result}")
-            except asyncio.TimeoutError:
-                print(f"LLM调用超时 (尝试 {attempt + 1}/{self.llm_retry_count})")
+                result = await self._execute_llm_call(provider, prompt, timeout=timeout)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                print(f"LLM调用异常 (尝试 {attempt + 1}/{self.llm_retry_count}): {e}")
-            
-            # 如果不是最后一次尝试，等待后重试
-            if attempt < self.llm_retry_count - 1:
-                await asyncio.sleep(self.llm_retry_delay * (attempt + 1))
-        
-        print(f"经过 {self.llm_retry_count} 次尝试，LLM调用失败")
+                print(f"情感分析 provider [{name}] 调用异常: {e}")
+                result = None
+
+            if result and len(result) > 10:  # 确保有足够的返回内容
+                print(f"情感分析成功: provider={name}")
+                return result
+
+            print(f"provider [{name}] 未返回有效内容，切换下一个")
+
+        print("情感分析备选链全部失败，降级到本地兜底")
         return None
+
+    def _get_all_providers(self) -> List[Any]:
+        """读取全部 provider 实例；context 不可用或异常时返回空列表"""
+        if self.context is None:
+            return []
+        getter = getattr(self.context, "get_all_providers", None)
+        if not callable(getter):
+            return []
+        try:
+            return list(getter() or [])
+        except Exception as e:
+            print(f"读取 provider 列表失败: {e}")
+            return []
+
+    def _get_provider_by_id(self, provider_id: str) -> Optional[Any]:
+        """按 provider id 取实例；取不到返回 None（不抛异常）
+
+        与 AstrBot 自身解析 fallback_chat_models 的方式一致
+        （astr_main_agent.py 里用的是 plugin_context.get_provider_by_id）。
+        """
+        if not provider_id or self.context is None:
+            return None
+        getter = getattr(self.context, "get_provider_by_id", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(provider_id)
+        except Exception as e:
+            print(f"按 id 解析 provider 失败 [{provider_id}]: {e}")
+            return None
+
+    def _resolve_fallback_provider_ids(self, umo: str = None) -> List[str]:
+        """读取当前会话档案里配置的 fallback_chat_models（只读，不修改）
+
+        provider_settings 取自 umo 解析后的档案，因此不同会话可以有不同的链。
+        任何异常都退化为空列表，绝不影响情感分析主流程。
+        """
+        if self.context is None:
+            return []
+        getter = getattr(self.context, "get_config", None)
+        if not callable(getter):
+            return []
+        try:
+            cfg = getter(umo)
+            if cfg is None:
+                return []
+            provider_settings = cfg.get("provider_settings", {})
+            if not isinstance(provider_settings, dict):
+                return []
+            ids = provider_settings.get("fallback_chat_models", [])
+            if not isinstance(ids, (list, tuple)):
+                return []
+            return [str(i).strip() for i in ids if isinstance(i, str) and i.strip()]
+        except Exception as e:
+            print(f"读取档案退避链失败: {e}")
+            return []
+
+    def _build_provider_chain(self, umo: str = None) -> List[Any]:
+        """构造情感分析的备选 provider 链（有序、按 id 去重）
+
+        顺序：
+          1. `_find_target_provider` 的结果 —— 与改动前的首选完全一致
+             （辅助LLM → 会话主LLM → deepseek/default → providers[0]）
+          2. 当前会话的主 LLM —— 显式配置了辅助 LLM 时，第 1 步只会返回辅助
+             LLM，这里补上主 LLM 作为第二候选（按 id 去重，重复时自动忽略）
+          3. 当前档案配置的 fallback_chat_models（复用用户已有配置，只读）
+          4. 其余全部 provider（保持 get_all_providers 的顺序）
+
+        后两项保证即使档案没配退避链，也有兜底候选可选。
+        """
+        providers = self._get_all_providers()
+        if not providers:
+            return []
+
+        chain: List[Any] = []
+        seen = set()
+
+        def add(provider) -> None:
+            if provider is None:
+                return
+            pid, _ = self._get_provider_meta(provider)
+            key = pid or f"obj:{id(provider)}"
+            if key in seen:
+                return
+            seen.add(key)
+            chain.append(provider)
+
+        # 1. 首选（与旧行为一致）
+        try:
+            add(self._find_target_provider(providers, umo))
+        except Exception as e:
+            print(f"首选 provider 解析失败: {e}")
+
+        # 2. 会话主 LLM（辅助 LLM 已命中时的第二候选）
+        add(self._get_main_provider(umo))
+
+        # 3. 档案里配置的退避链
+        for provider_id in self._resolve_fallback_provider_ids(umo):
+            add(self._get_provider_by_id(provider_id))
+
+        # 4. 其余全部
+        for provider in providers:
+            add(provider)
+
+        return chain
 
     async def _call_real_llm(self, user_message: str, ai_response: str,
                              state: EnhancedEmotionalState,
                              umo: str = None) -> Optional[str]:
-        """调用真正的LLM进行情感分析"""
+        """只调用「首选 provider」一次（调试/单发入口）
+
+        正式路径是 `_call_real_llm_with_retry` 的备选链；这里不做跨 provider
+        切换，方便单独验证首选 provider 是否可用。
+        """
         if not self.context:
             print("没有context，无法调用LLM")
             return None
         
-        providers = self.context.get_all_providers()
+        providers = self._get_all_providers()
         if not providers:
             print("没有可用的LLM提供商")
             return None
@@ -254,8 +435,15 @@ class EmotionAnalysisExpert:
         model = (self.secondary_llm_model or "").strip()
         return model or None
 
-    async def _execute_llm_call(self, provider, prompt: str) -> Optional[str]:
-        """执行LLM调用 - 完整实现"""
+    async def _execute_llm_call(self, provider, prompt: str,
+                                timeout: Optional[float] = None) -> Optional[str]:
+        """执行LLM调用 - 完整实现
+
+        timeout 为 None 时沿用 self.llm_timeout（保持旧调用方的行为不变）；
+        备选链会传入按剩余预算裁剪过的时间片。
+        """
+        if timeout is None:
+            timeout = self.llm_timeout
         provider_name = self._get_provider_name(provider)
         print(f"使用LLM提供商 [{provider_name}] 进行情感分析")
         
@@ -268,7 +456,7 @@ class EmotionAnalysisExpert:
                 print(f"调用 {provider_name}.text_chat()")
                 result = await asyncio.wait_for(
                     provider.text_chat(prompt, model=self._target_model()),
-                    timeout=self.llm_timeout
+                    timeout=timeout
                 )
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
@@ -286,7 +474,7 @@ class EmotionAnalysisExpert:
                 messages = [{"role": "user", "content": prompt}]
                 result = await asyncio.wait_for(
                     provider.chat_completion(messages=messages),
-                    timeout=self.llm_timeout
+                    timeout=timeout
                 )
                 text = self._extract_response_text(result)
                 if text and len(text) > 10:
@@ -305,7 +493,7 @@ class EmotionAnalysisExpert:
             return None
             
         except asyncio.TimeoutError:
-            print(f"LLM调用超时 ({self.llm_timeout}秒)")
+            print(f"LLM调用超时 ({timeout:.1f}秒)")
             return None
         except Exception as e:
             print(f"LLM调用异常: {e}")

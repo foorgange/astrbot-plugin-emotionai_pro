@@ -41,6 +41,8 @@ class PluginConfig(BaseModel):
     enable_secondary_llm: bool = Field(default=True, description="启用辅助LLM进行情感分析")
     secondary_llm_provider: Optional[str] = Field(default=None, description="辅助LLM提供商")
     secondary_llm_model: Optional[str] = Field(default=None, description="辅助LLM模型名称")
+    emotion_llm_time_budget: float = Field(default=45.0, ge=10.0, le=300.0, description="情感分析总时间预算(秒)，预算耗尽即放弃LLM分析，降级为本地兜底")
+    emotion_llm_max_providers: int = Field(default=3, ge=1, le=10, description="情感分析预算内最多尝试的provider个数")
     bot_name: Optional[str] = Field(default=None, description="机器人人设名称，留空则首次启动自动从 AstrBot persona 提取")
     
     # 性能配置

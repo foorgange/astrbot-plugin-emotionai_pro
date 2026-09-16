@@ -107,6 +107,18 @@
     "default": "",
     "hint": "用于情感分析的LLM模型名称"
   },
+  "emotion_llm_time_budget": {
+    "description": "情感分析总时间预算(秒)",
+    "type": "float",
+    "default": 45.0,
+    "hint": "情感分析在这么多秒内没拿到结果就放弃，改用本地兜底。预算内会依次尝试备选模型（辅助LLM → 主LLM → 当前配置文件的回退模型列表）。建议 30~60"
+  },
+  "emotion_llm_max_providers": {
+    "description": "情感分析最多尝试几个模型",
+    "type": "int",
+    "default": 3,
+    "hint": "总预算内最多尝试的模型个数；单次时间片 = min(30秒, 预算 / 本值)"
+  },
   "bot_name": {
     "description": "机器人人设名称",
     "type": "string",

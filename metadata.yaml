@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.13
+version: v4.0.14
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,30 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.14 优化内容（by foorgange）：
+
+  1. 情感分析接入「带总时间预算的备选链」。改动前只选 1 个 provider，然后对
+     同一个 provider 重试 3 次 × 30 秒超时，最坏约 90 秒才降级到本地兜底，
+     而且主 provider 一旦不可用就完全没有冗余。现在改为：在
+     emotion_llm_time_budget 秒的总预算内，沿备选链依次尝试
+     （辅助LLM → 会话主LLM → 当前配置文件的回退模型列表 → 其它 provider，
+     按 id 去重），最多尝试 emotion_llm_max_providers 个，任一成功即返回；
+     预算耗尽则降级到本地兜底。单次时间片 = min(30 秒, 预算 / 尝试个数)
+     且不超过剩余预算，因此单个挂住的模型不会吃掉全部预算。
+  2. 新增两个配置项：emotion_llm_time_budget（默认 45 秒，范围 10~300）、
+     emotion_llm_max_providers（默认 3，范围 1~10）。留空或非法值一律回退
+     默认，不会导致插件加载失败。
+  3. 只读复用用户已有的回退模型配置：备选链第 3 段直接读取当前会话配置文件
+     的 provider_settings.fallback_chat_models，因此不必再配置一遍。
+     全程只读，不修改任何 provider / provider_settings，
+     **不影响 AstrBot 主对话自身的退避重试机制**。
+  4. 兼容性：只有一个候选 provider 时保留原有的「同一 provider 重试 3 次」
+     语义（含退避等待）；_execute_llm_call 不传 timeout 的旧调用方式继续可用。
+  5. 测试：新增 34 项回归测试（备选链顺序与去重、预算封顶、失败切换、
+     单候选重试、配置项边界、provider_settings 只读性），
+     全量用例 190 项通过。
 
 
   v4.0.13 修复内容（by foorgange）：

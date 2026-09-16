@@ -25,5 +25,5 @@ except ImportError:
 
 from .main import EmotionAIProPlugin
 
-__version__ = "4.0.13"
+__version__ = "4.0.14"
 __all__ = ['EmotionAIProPlugin', '__version__']
