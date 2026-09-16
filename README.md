@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.10
+# EmotionAI Pro - 融合版情感智能插件 v4.0.11
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -11,6 +11,48 @@
 ---
 
 ## 更新日志
+
+### v4.0.11（注入上下文与人设冲突修复）
+
+**修复注入的情感状态块会把人设"顶掉"的问题。不改动情感算法、不改变注入位置。**
+
+1. **注入文本不再自称 AI**（`main.py::_build_enhanced_context`）
+   主对话注入块的开头原本写死了：
+
+   ```
+   你是一个具有丰富情感的AI助手，请根据以下情感状态调整你的回应风格。
+   ```
+
+   这个块是追加在**用户消息之后**（`extra_user_content_parts`）的，位置比
+   `system_prompt` 更靠后、权重更高。而相当多的人设（例如「永雏塔菲」）在
+   system_prompt 里明确写了「你不是 AI / 不要承认自己是 AI」，于是模型会
+   把自己当成通用 AI 助手，出现**人格漂移**——开始用助手的口吻说话，
+   而不是角色本身。
+
+   现改为：
+
+   ```
+   以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，
+   在此基础上自然地调整语气、用词与情绪倾向。
+   ```
+
+   既不做任何身份断言，又显式要求**保持既有身份不变**（比原来更强的约束）。
+
+2. **注入的子内容也做 AI 字样清洗**
+   长期记忆里的关系轨迹描述是模型生成的，可能残留 `AI` 字样；语气指导同理。
+   现在这两段在拼接前都会过一遍 `_sanitize_ai_text()`（与状态展示、描述写入
+   使用同一套规则），`bot_name` 未解析时是安全的空操作。
+
+3. **测试**
+   新增 `tests/test_persona_consistency.py`（9 项），其中包含一条硬性守卫：
+   **整段注入文本不得出现任何独立的 ASCII `AI` 字样**（复用插件自身的
+   `_AI_STANDALONE_RE` 判据），防止未来改动再次引入身份断言。
+   同时把版本号一致性用例改为**动态读取 `__init__.py` 的 `__version__`**，
+   一次性校验 `__init__.py` / `main.py` / `storage.py` / `metadata.yaml` /
+   `README.md` 五处是否同步，以后发版不必再改测试。
+   全量 **138 项测试通过**。
+
+**涉及文件**：`main.py`、`tests/test_persona_consistency.py`、`tests/test_bug_fixes.py`
 
 ### v4.0.10（缓存崩溃 + 情感分析模型选择修复）
 

@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.10
+version: v4.0.11
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,23 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.11 修复内容（by foorgange）：
+
+  1. 修复注入上下文与人设冲突：主对话注入块开头写死了
+     「你是一个具有丰富情感的AI助手」。该块追加在**用户消息之后**，
+     位置比 system_prompt 更靠后、权重更高，而很多人设（如「永雏塔菲」）
+     明确写了「你不是 AI」，模型会因此把自己当成通用助手，人格漂移。
+     现改为「以下是本次回应的情感状态参考，请保持你既有的身份设定与
+     说话风格不变」，不再做任何身份断言。
+  2. 注入文本的子内容（长期记忆关系轨迹、语气指导）同样过一遍
+     AI 字样清洗，避免模型生成的历史描述里残留的 "AI" 被注入；
+     bot_name 未解析时是安全的空操作。
+  3. 测试：新增 9 项人设一致性回归测试（含「整段注入文本不得出现独立
+     AI 字样」的硬性守卫）；版本号一致性用例改为动态读取 __version__，
+     一次校验 __init__.py / main.py / storage.py / metadata.yaml /
+     README.md 五处同步。全量用例 138 项通过。
 
 
   v4.0.10 修复内容（by foorgange）：

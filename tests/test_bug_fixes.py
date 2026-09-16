@@ -5,10 +5,11 @@
 - fix_interaction_stats: positive + negative == total
 - _apply_expert_updates 互动计数不重复
 - stability_score 无 -inf
-- 版本号统一 4.0.6
+- 版本号在 __init__.py / main.py / storage.py / metadata.yaml / README.md 五处一致
 """
 import sys
 import os
+import re
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -137,24 +138,57 @@ class TestStabilityScoreNoInf(unittest.TestCase):
 
 
 class TestVersionConsistency(unittest.TestCase):
-    """版本号统一为 4.0.10"""
+    """版本号在 __init__.py / main.py @register / storage.py 三处保持一致
+
+    以 __init__.py 的 __version__ 为唯一真源，避免每次发版都要改测试。
+    """
+
+    @staticmethod
+    def _expected() -> str:
+        """从 __init__.py 源码解析 __version__（唯一真源）
+
+        注意：不能 `import emotionai_pro` 取 __version__ —— tests/bootstrap.py
+        注册的是**合成包**（只设 __path__，不执行 __init__.py），拿不到该属性。
+        """
+        init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
+        src = open(init_path, encoding="utf-8").read()
+        m = re.search(r'^__version__\s*=\s*"([^"]+)"', src, re.M)
+        if not m:
+            raise AssertionError("__init__.py 中未找到 __version__ 定义")
+        return m.group(1)
+
+    def test_semver_shape(self):
+        """版本号形如 x.y.z"""
+        self.assertRegex(self._expected(), r"^\d+\.\d+\.\d+$")
 
     def test_init_version(self):
         init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
         src = open(init_path, encoding="utf-8").read()
-        self.assertIn('__version__ = "4.0.10"', src)
+        self.assertIn(f'__version__ = "{self._expected()}"', src)
 
     def test_main_register_version(self):
-        """@register 装饰器版本为 4.0.10"""
+        """@register 装饰器版本与 __version__ 一致"""
         main_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "main.py")
         src = open(main_path, encoding="utf-8").read()
-        self.assertIn('"4.0.10"', src)
+        self.assertIn(f'"{self._expected()}"', src)
         self.assertNotIn('"4.0.0"', src)
 
     def test_storage_version(self):
         import emotionai_pro.storage as storage_mod
         src = open(storage_mod.__file__, encoding="utf-8").read()
-        self.assertIn("'4.0.10'", src)
+        self.assertIn(f"'{self._expected()}'", src)
+
+    def test_metadata_yaml_version(self):
+        """metadata.yaml 的 version 与 __version__ 一致（插件市场读这里）"""
+        meta_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.yaml")
+        src = open(meta_path, encoding="utf-8").read()
+        self.assertIn(f"version: v{self._expected()}", src)
+
+    def test_readme_title_version(self):
+        """README 标题里的版本号与 __version__ 一致"""
+        readme_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "README.md")
+        src = open(readme_path, encoding="utf-8").read()
+        self.assertIn(f"v{self._expected()}", src.splitlines()[0])
 
 
 if __name__ == "__main__":
