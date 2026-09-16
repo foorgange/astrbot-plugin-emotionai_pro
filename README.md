@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.9
+# EmotionAI Pro - 融合版情感智能插件 v4.0.10
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -11,6 +11,46 @@
 ---
 
 ## 更新日志
+
+### v4.0.10（缓存崩溃 + 情感分析模型选择修复）
+
+**修复两个"环境一变就出事"的隐患，不改动情感算法与上下文注入结构。**
+
+1. **修复 xxhash ≥ 4.0 下分片缓存整体崩溃**（`cache.py`）
+   `_get_shard()` 直接把 `str` 传给 `xxhash.xxh64()`，旧版 xxhash（3.x）会隐式接受字符串，
+   但 4.0 起会抛 `TypeError: Strings must be encoded before hashing`，导致缓存层完全不可用。
+   现统一编码为 `bytes`；已实测 xxhash 3.x 下 `xxh64(str)` 与 `xxh64(bytes)` 结果一致，
+   因此对现有部署是**行为等价**的修复。
+
+2. **修复情感分析模型选择完全失效**（`emotion_expert.py`）
+   读取 provider 元信息时用了并不存在的 `provider.name` 属性，取不到便退化成类名
+   （如 `ProviderOpenAIOfficial`），于是：
+   - `secondary_llm_provider` 配置项**完全失效**；
+   - 名称匹配永远不命中，最终落到 `providers[0]`。
+
+   线上实测落到的是视觉模型 `Qwen/Qwen3-VL-30B-A3B-Instruct`，而非配置声明的
+   `商汤/deepseek-v4-flash`。现改为读取 `meta()`，并按配置项说明
+   「留空则使用主 LLM」的语义补齐选择顺序：
+   显式配置 → 主 LLM → 名称含 deepseek/default → 第一个可用。
+
+3. **修复主 LLM 解析取错配置**（`emotion_expert.py` + `main.py`）
+   调用 `get_using_provider()` 时未传 `umo`，AstrBot 会退回读**全局**
+   `cmd_config.json` 的 `default_provider_id`；而实际生效的是 WebUI 里的
+   配置档案（如 `ds-flash`），两者可能指向完全不同的 provider。
+   线上就因此拿到了一个已失效的 provider（`400 Model is unavailable`），
+   导致情感分析每次静默退化为关键词兜底。现从事件透传 `umo`。
+
+4. **`secondary_llm_model` 死配置修复**
+   该配置项此前从未被读取。现通过 `text_chat(model=...)` 真正生效。
+
+5. **测试**
+   - 修复「模拟 xxhash 缺失」用例无效的问题：仅把 `xxhash` 从 `sys.modules` 弹出
+     无法阻止 reload 时重新导入，需将其置为 `None`；
+   - 新增 `tests/test_provider_resolution.py`（20 项）与分片哈希用例（1 项），
+     覆盖 provider 元信息读取、选择优先级、`umo` 透传、`model` 透传，
+     全量 **126 项测试通过**。
+
+**涉及文件**：`cache.py`、`emotion_expert.py`、`main.py`、`tests/test_misc.py`、`tests/test_provider_resolution.py`
 
 ### v4.0.9（性能优化 + 健壮性修复）
 

@@ -34,7 +34,7 @@ from .global_mood import (
 # 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
 _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECASE)
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.9")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.10")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -765,7 +765,8 @@ class EmotionAIProPlugin(Star):
                 # 调用辅助LLM进行专业评估
                 logger.info(f"[DEBUG] 开始调用情感分析专家")
                 expert_updates = await self.emotion_expert.analyze_and_update_emotion(
-                    user_key, user_message, original_text, state
+                    user_key, user_message, original_text, state,
+                    getattr(event, "unified_msg_origin", None),
                 )
             
                 if expert_updates:

@@ -28,17 +28,50 @@ class TestCacheNoBareXxhash(unittest.TestCase):
     """cache.py 不再裸导入 xxhash（本机无 xxhash 也能 import + fallback）"""
 
     def test_import_works_without_xxhash(self):
-        import sys as _sys
-        if "xxhash" in _sys.modules:
-            _sys.modules.pop("xxhash")
+        """模拟 xxhash 缺失：应回退到 hashlib 而不是导入失败。
+
+        注意：仅把 xxhash 从 sys.modules 里 pop 掉是不够的——reload 时
+        `import xxhash` 会重新从 site-packages 加载，XXHASH_AVAILABLE 仍为 True，
+        导致断言失效。正确做法是把 sys.modules["xxhash"] 置为 None，
+        这样 import 语句会抛 ImportError。
+        """
         import importlib
-        cache_mod_clean = importlib.reload(cache_mod)
-        self.assertFalse(cache_mod_clean.XXHASH_AVAILABLE)
-        # 仍能通过 hashlib fallback 正常工作（缓存启动需在事件循环内）
+        from unittest.mock import patch
+
+        try:
+            with patch.dict(sys.modules, {"xxhash": None}):
+                cache_mod_clean = importlib.reload(cache_mod)
+                self.assertFalse(cache_mod_clean.XXHASH_AVAILABLE)
+
+                # 仍能通过 hashlib fallback 正常读写（缓存启动需在事件循环内）
+                async def go():
+                    c = cache_mod_clean.ShardedTTLCache(
+                        max_size=10, shard_count=2, default_ttl=60
+                    )
+                    self.assertTrue(hasattr(c, "_get_shard"))
+                    await c.set("k", {"v": 1})
+                    self.assertEqual(await c.get("k"), {"v": 1})
+                    await c.close()
+
+                asyncio.run(go())
+        finally:
+            # 必须在 patch 退出之后再 reload，否则恢复出来的仍是 fallback 版本
+            importlib.reload(cache_mod)
+
+        self.assertTrue(cache_mod.XXHASH_AVAILABLE)
+
+    def test_shard_hash_accepts_str_key(self):
+        """_get_shard 必须接受 str 键（xxhash>=4.0 下未编码会直接抛 TypeError）"""
         async def go():
             c = ShardedTTLCache(max_size=10, shard_count=2, default_ttl=60)
-            self.assertTrue(hasattr(c, "_get_shard"))
-            await c.close()
+            try:
+                shard = c._get_shard("普通字符串键")
+                self.assertIsNotNone(shard)
+                # 同一键必须稳定映射到同一分片
+                self.assertIs(shard, c._get_shard("普通字符串键"))
+            finally:
+                await c.close()
+
         asyncio.run(go())
 
     def test_set_get_roundtrip(self):
