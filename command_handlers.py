@@ -409,7 +409,7 @@ class AdminCommandHandler(BaseCommandHandler):
         relationship_display = sanitize(state.descriptions.relationship)
 
         response_lines = [
-            f"【用户 {display_name} 完整情感状态】",
+            f"【{display_name} 完整情感状态】",
             f"用户标识: {user_key}",
             "==================",
             f"关系阶段: {stage_info['stage_name']} (进度: {stage_info['progress_to_next']:.1f}%)",

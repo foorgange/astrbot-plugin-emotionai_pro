@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.12
+# EmotionAI Pro - 融合版情感智能插件 v4.0.13
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -11,6 +11,38 @@
 ---
 
 ## 更新日志
+
+### v4.0.13（`/查看好感` 输出重复「用户」字样修复）
+
+**纯显示层修复，不动任何情感逻辑。**
+
+1. **头部重复前缀**（`command_handlers.py::view_favor`）
+   管理员执行 `/查看好感 <id>` 时，第一行原本输出成：
+
+   ```
+   【用户 用户3418451176 完整情感状态】
+   ```
+
+   `用户` 出现了两次。根因是两边都加了前缀：
+   `RankingManager._format_user_display()` 的契约本身就是**自带** `用户` 前缀
+   （排行榜里 `{rank}. {display_name}` 是独立使用的，`models.py` 的
+   `RankingEntry.display_name` 默认值也带前缀），而头部模板又写了一次「用户」。
+
+   现模板去掉多余的「用户」，保留 `_format_user_display` 的前缀：
+
+   ```
+   【用户3418451176 完整情感状态】
+   ```
+
+   与非管理员版 `/好感度` 的 `用户{id}` 风格保持一致。其余行不受影响。
+
+2. **测试**
+   新增 4 项回归测试（`tests/test_bug_fixes.py::TestViewFavorHeaderNoDuplicateUser`），
+   并且**用的是真实的 `_format_user_display`** —— 它才是加前缀的源头，
+   stub 掉就测不出这个 bug。已验证把 bug 放回去时 4 项全部失败（测试非空跑）。
+   全量 **156 项测试通过**。
+
+**涉及文件**：`command_handlers.py`、`tests/test_bug_fixes.py`
 
 ### v4.0.12（情感分析转后台，不再阻塞回复收尾）
 
