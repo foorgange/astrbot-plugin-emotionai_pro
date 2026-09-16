@@ -34,7 +34,12 @@ from .global_mood import (
 # 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
 _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECASE)
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.11")
+# 插件关闭时，等待在跑的后台情感分析任务自然收尾的宽限秒数；
+# 超时才取消（直接取消可能在 update_user_state 写盘中途打断）。
+# 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
+_EMOTION_SHUTDOWN_GRACE = 3.0
+
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.12")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -101,6 +106,9 @@ class EmotionAIProPlugin(Star):
         # 智能缓存清理任务
         self.smart_cleanup_task: Optional[asyncio.Task] = None
         self._start_smart_cache_cleanup()
+
+        # 后台情感分析任务表（key=user_key；同一用户同时只允许一个在跑）
+        self._emotion_update_tasks: Dict[str, asyncio.Task] = {}
 
         logger.info(f"EmotionAI Pro 优化版插件初始化完成")
         logger.info(f"配置: 智能更新={self.config.enable_smart_update}, 辅助LLM={self.config.enable_secondary_llm}")
@@ -723,7 +731,17 @@ class EmotionAIProPlugin(Star):
     
     @filter.on_llm_response(priority=100000)
     async def process_smart_update(self, event: AstrMessageEvent, resp: LLMResponse):
-        """智能更新流程 - 修复版本"""
+        """智能更新流程 - 修复版本
+
+        v4.0.12 起改为「同步判定 + 后台分析」两段式：
+          同步段（微秒级）：标记剥离、更新判定、心情轻量信号、状态展示、状态落盘
+          后台段（数秒级）：情感分析 LLM 调用、状态应用、记忆写入、心情叠加演进
+
+        原因：情感分析实测单次 7~11s，而本钩子由 astr_agent_hooks.on_agent_done
+        通过 await 触发，原先同步执行会拖慢回复收尾与后续消息处理。改后台后
+        用户感知延迟消失，情感数值更新延后到后台任务完成时生效（下一轮可见）。
+        注意：resp.completion_text 的所有改动仍在回复发出前完成。
+        """
         user_key = self._get_user_key(event)
         original_text = resp.completion_text
         user_message = self._get_message_text(event)
@@ -769,60 +787,110 @@ class EmotionAIProPlugin(Star):
 
         logger.info(f"[DEBUG] 是否需要更新: {needs_update}, 原因: {update_reason}")
 
-        expert_updates = None  # 供全局心情演进使用（无更新时为 None）
-        if needs_update:
-            logger.info(f"情感更新触发: {update_reason}")
-        
-            try:
-                # 调用辅助LLM进行专业评估
-                logger.info(f"[DEBUG] 开始调用情感分析专家")
-                expert_updates = await self.emotion_expert.analyze_and_update_emotion(
-                    user_key, user_message, original_text, state,
-                    getattr(event, "unified_msg_origin", None),
-                )
-            
-                if expert_updates:
-                    self._apply_expert_updates(state, expert_updates)
-                
-                    # 计算情感意义并记录到记忆系统
-                    emotional_significance = self._calculate_emotional_significance(expert_updates)
-                    await self.memory_system.add_interaction(
-                        user_key, user_message, original_text, emotional_significance,
-                        emotional_changes=expert_updates
-                    )
-                
-                    # 重置强制更新计数器
-                    state.reset_force_update_counter()
-                
-                    logger.info(f"[DEBUG] 应用专家更新: {expert_updates}")
-                else:
-                    logger.warning(f"[DEBUG] 情感分析返回空结果")
-                
-            except Exception as e:
-                logger.error(f"情感更新处理失败: {e}")
-
-        # 全局心情演进：bot 的心情随每条对话实时变化
-        # 1) 轻量信号（关键词/语气/颜文字）——每条对话都执行，实时响应他人话语
-        # 2) 若本次产生了专家更新，再叠加各维度变化
+        # 全局心情演进（轻量信号）：每条对话都执行，实时响应他人话语。
+        # 纯本地关键词/语气计算，微秒级，保持同步执行。
         mood_signal = compute_mood_signal(user_message)
         if mood_signal:
             self._update_global_mood(mood_signal)
-        if needs_update and expert_updates:
-            self._update_global_mood(expert_updates)
 
-        logger.info(f"[DEBUG] 更新后状态 - 好感:{state.favor}, 亲密:{state.intimacy}")
-        logger.info(f"[DEBUG] 更新后态度: '{state.descriptions.attitude}', 关系: '{state.descriptions.relationship}'")
-        logger.info(f"[DEBUG] 强制更新计数器: {state.force_update_counter}")
-        logger.info(f"[DEBUG] ==== 智能情感更新完成 ====")
-
-        # 保存状态
-        await self.user_manager.update_user_state(user_key, state)
-
-        # 根据用户设置和全局隐私级别显示状态
+        # 状态展示：必须在回复发出前追加到 resp.completion_text。
+        # 此处反映的是本轮更新前的心情（数值更新在后台任务完成时才生效）。
         if state.show_status and needs_update and self.config.global_privacy_level > PrivacyLevel.FULL_SECRET:
             status_text = self._format_emotional_state(state)
             status_text = self._sanitize_ai_text(status_text)
             resp.completion_text += f"\n\n{status_text}"
+
+        logger.info(f"[DEBUG] 当前状态（分析前）- 好感:{state.favor}, 亲密:{state.intimacy}")
+        logger.info(f"[DEBUG] 当前态度（分析前）: '{state.descriptions.attitude}', 关系: '{state.descriptions.relationship}'")
+        logger.info(f"[DEBUG] 强制更新计数器: {state.force_update_counter}")
+
+        # 先落盘计数器增量（后台任务完成后会再次落盘更新后的状态）
+        await self.user_manager.update_user_state(user_key, state)
+
+        # 耗时的情感分析转入后台，不再阻塞回复收尾
+        if needs_update:
+            logger.info(f"情感更新触发: {update_reason}")
+            self._spawn_emotion_update(
+                user_key, user_message, original_text, state,
+                getattr(event, "unified_msg_origin", None),
+            )
+
+        logger.info(f"[DEBUG] ==== 智能情感更新完成（分析已转后台） ====")
+
+    def _spawn_emotion_update(
+        self,
+        user_key: str,
+        user_message: str,
+        original_text: str,
+        state: EnhancedEmotionalState,
+        umo: Optional[str],
+    ) -> None:
+        """把耗时的情感分析放入后台任务。
+
+        并发约束：`get_user_state()` 返回的是缓存里的同一个 EnhancedEmotionalState
+        对象（managers.py:232），若同一用户同时跑多个分析会互相覆盖
+        force_update_counter 与数值更新，故同一用户同时只允许一个后台分析在跑
+        （本轮跳过，等下一轮）。
+        """
+        running = self._emotion_update_tasks.get(user_key)
+        if running is not None and not running.done():
+            logger.info(f"情感更新: {user_key} 上一轮分析仍在进行，跳过本轮后台分析")
+            return
+
+        task = asyncio.create_task(
+            self._run_emotion_update(user_key, user_message, original_text, state, umo)
+        )
+        # 持有强引用，避免任务被 GC 回收
+        self._emotion_update_tasks[user_key] = task
+        task.add_done_callback(
+            lambda t, k=user_key: self._emotion_update_tasks.pop(k, None)
+        )
+
+    async def _run_emotion_update(
+        self,
+        user_key: str,
+        user_message: str,
+        original_text: str,
+        state: EnhancedEmotionalState,
+        umo: Optional[str],
+    ) -> None:
+        """后台情感分析主体（原 process_smart_update 的耗时部分）"""
+        try:
+            # 调用辅助LLM进行专业评估
+            logger.info(f"[DEBUG] 开始调用情感分析专家（后台）")
+            expert_updates = await self.emotion_expert.analyze_and_update_emotion(
+                user_key, user_message, original_text, state, umo,
+            )
+
+            if expert_updates:
+                self._apply_expert_updates(state, expert_updates)
+
+                # 计算情感意义并记录到记忆系统
+                emotional_significance = self._calculate_emotional_significance(expert_updates)
+                await self.memory_system.add_interaction(
+                    user_key, user_message, original_text, emotional_significance,
+                    emotional_changes=expert_updates
+                )
+
+                # 重置强制更新计数器
+                state.reset_force_update_counter()
+
+                logger.info(f"[DEBUG] 应用专家更新: {expert_updates}")
+
+                # 专家更新叠加到全局心情演进
+                self._update_global_mood(expert_updates)
+            else:
+                logger.warning(f"[DEBUG] 情感分析返回空结果")
+
+            # 落盘更新后的状态
+            await self.user_manager.update_user_state(user_key, state)
+            logger.info(f"[DEBUG] 后台情感更新完成 - 好感:{state.favor}, 亲密:{state.intimacy}")
+
+        except asyncio.CancelledError:
+            logger.info(f"情感更新后台任务被取消: {user_key}")
+            raise
+        except Exception as e:
+            logger.error(f"情感更新处理失败: {e}")
 
     def _apply_expert_updates(self, state: EnhancedEmotionalState, updates: Dict[str, Any]):
         """应用专家更新 - 修复描述词覆盖逻辑"""
@@ -1078,6 +1146,22 @@ class EmotionAIProPlugin(Star):
                 except asyncio.CancelledError:
                     pass
             
+            # 后台情感分析任务：先给 _EMOTION_SHUTDOWN_GRACE 秒自然收尾，超时再取消
+            # （直接取消可能在 update_user_state 写盘中途打断）
+            pending = [
+                t for t in getattr(self, "_emotion_update_tasks", {}).values()
+                if not t.done()
+            ]
+            if pending:
+                _, still_running = await asyncio.wait(
+                    pending, timeout=_EMOTION_SHUTDOWN_GRACE
+                )
+                for t in still_running:
+                    t.cancel()
+                if still_running:
+                    await asyncio.gather(*still_running, return_exceptions=True)
+            self._emotion_update_tasks.clear()
+
             # 关闭所有管理器
             await self.user_manager.close()
             await self.cache.close()

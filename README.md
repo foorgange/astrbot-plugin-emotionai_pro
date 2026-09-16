@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.11
+# EmotionAI Pro - 融合版情感智能插件 v4.0.12
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -11,6 +11,51 @@
 ---
 
 ## 更新日志
+
+### v4.0.12（情感分析转后台，不再阻塞回复收尾）
+
+**纯性能与健壮性改动，不改动情感算法、不改变注入位置与注入内容。**
+
+1. **情感分析不再阻塞回复收尾**（`main.py::process_smart_update`）
+
+   情感分析（辅助 LLM 调用）实测单次耗时 **7~11 秒**。它挂在
+   `@filter.on_llm_response(priority=100000)` 上，而该钩子由
+   `astr_agent_hooks.py::MainAgentHooks.on_agent_done()` 通过
+   `await call_event_hook(..., OnLLMResponseEvent, ...)` 触发——也就是说
+   这 7~11 秒是**串在回复收尾路径上**的。失败路径更糟：
+   `llm_retry_count=3` × `llm_timeout=30s` 全落在同一个 provider 上，
+   最坏约 90 秒才降级到关键词兜底。
+
+   现改为**「同步判定 + 后台分析」两段式**：
+
+   | 阶段 | 内容 | 耗时 |
+   |------|------|------|
+   | 同步段 | 标记剥离、更新判定、心情轻量信号、状态展示、状态落盘 | 微秒级 |
+   | 后台段 | 情感分析 LLM 调用、状态应用、记忆写入、心情叠加演进 | 数秒级 |
+
+   关键约束：`resp.completion_text` 的所有改动（`[需要情感评估]` 标记剥离、
+   状态展示追加）**仍发生在回复发出之前**——只有耗时的分析及其后的状态
+   变更转入后台。因此情感数值的更新会延后到后台任务完成时生效（下一轮
+   对话可见），状态展示反映的是**本轮更新前**的心情。
+
+2. **后台任务的并发保护**
+   `get_user_state()` 返回的是缓存里的**同一个** `EnhancedEmotionalState`
+   对象（`managers.py:232`），若同一用户并发跑多个分析，会互相覆盖
+   `force_update_counter` 与数值更新。现在同一用户同时只允许一个后台分析
+   在跑，重复触发时本轮跳过（等下一轮）。不同用户之间互不阻塞。
+
+3. **关闭时优雅收尾**
+   插件 `terminate()` 先给在跑的分析 **3 秒**自然收尾再取消——直接取消
+   可能在 `update_user_state` 写盘中途打断。取消后正常清空任务登记表。
+
+4. **测试**
+   新增 `tests/test_background_emotion_update.py`（14 项），覆盖：钩子
+   非阻塞性（分析挂住不返回时钩子仍立即返回）、标记剥离与状态展示仍在
+   回复前完成、**umo 透传不因改后台而丢失**（守住 v4.0.10 的修复）、
+   同用户串行、异常被吞掉不产生 unhandled task exception、
+   `CancelledError` 正常传播、关闭清理。全量 **152 项测试通过**。
+
+**涉及文件**：`main.py`、`tests/test_background_emotion_update.py`
 
 ### v4.0.11（注入上下文与人设冲突修复）
 

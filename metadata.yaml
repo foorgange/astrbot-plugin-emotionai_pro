@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
-version: v4.0.11
+version: v4.0.12
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -13,6 +13,26 @@ desc: >
   插件功能：
   支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
   排行榜、管理员控制、缓存优化与备份恢复等功能。
+
+
+  v4.0.12 修复内容（by foorgange）：
+
+  1. 情感分析不再阻塞回复收尾。情感分析（辅助 LLM 调用）实测单次耗时
+     7~11 秒，而它挂在 on_llm_response 钩子上，该钩子由
+     astr_agent_hooks.on_agent_done 通过 await 触发，因此会拖慢回复收尾
+     与后续消息处理（失败路径更糟：3 次 × 30s 超时全在同一个 provider）。
+     现改为「同步判定 + 后台分析」两段式：标记剥离、更新判定、心情轻量
+     信号、状态展示、状态落盘仍在同步段完成（微秒级），只有耗时的
+     分析调用与其后的状态应用、记忆写入转入 asyncio 后台任务。
+     注意 resp.completion_text 的所有改动仍发生在回复发出之前；
+     情感数值更新延后到后台任务完成时生效（下一轮对话可见）。
+  2. 后台任务的并发保护：get_user_state 返回的是缓存里的同一个状态对象，
+     同一用户若并发跑多个分析会互相覆盖 force_update_counter 与数值更新。
+     现同一用户同时只允许一个后台分析（本轮跳过，等下一轮）。
+  3. 插件关闭时先给在跑的分析 3 秒自然收尾再取消，避免在状态写盘中途
+     被打断；取消后正常清空任务登记表。
+  4. 测试：新增 14 项后台任务回归测试（非阻塞性、同用户串行、异常吞掉、
+     CancelledError 传播、umo 透传不丢失、关闭清理），全量用例 152 项通过。
 
 
   v4.0.11 修复内容（by foorgange）：
