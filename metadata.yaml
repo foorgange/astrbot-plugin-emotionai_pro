@@ -211,7 +211,7 @@ desc: >
   2. 放宽态度/关系描述的正则验证，并同步 emotion_expert 截断上限
      （30 -> 50 字）。
 
-  所有修复已向上游仓库提交 PR，不附带链接
+  部分修复已向上游仓库提交 PR，不附带链接
 url: https://github.com/foorgange/astrbot-plugin-emotionai_pro
 tags:
   - emotion
