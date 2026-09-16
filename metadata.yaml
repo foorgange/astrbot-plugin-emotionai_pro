@@ -1,217 +1,72 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
-short_desc: AstrBot 高级情感智能交互插件（含 bug 修复版）
+short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
 version: v4.0.15
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
-  基于 asakiyoshi 开发的 EmotionAI Pro v4.0.0 的修复版本。
-  原仓库已长期未更新，提交的 PR 可能无法及时合并，因此发布此修复版本到
-  插件市场，确保用户能正常使用。
+  EmotionAI Pro —— 让你的 AI 拥有真实、渐进、可养成的情感与关系。
+
+  它不是简单的「好感度加减」，而是给 AI 角色装上一套完整的内心世界：
+  会记住你，会对你有态度，会随着相处慢慢改变关系，也会在你说错话时
+  真的变得冷淡。适合群聊互动、私聊陪伴、角色扮演与剧情养成。
 
 
-  插件功能：
-  支持 8 维情感模型、4 阶段关系演化、长期记忆系统、智能更新机制、
-  排行榜、管理员控制、缓存优化与备份恢复等功能。
+  【8 维情感模型】
+
+  喜悦、信任、恐惧、惊讶、悲伤、厌恶、愤怒、期待。每次对话都会真实影响
+  AI 的情绪构成，而不是只给一个数字加减。
 
 
-  v4.0.15 修复与加固内容（by foorgange）：
+  【4 阶段关系演化】
 
-  1. 分片缓存的哈希计算改为「两级兜底」，从「修掉某一次哈希异常」升级为
-     「结构性堵死这类问题」。此前 _get_shard 里 xxhash 一旦抛异常（例如
-     xxhash>=4.0 不再接受 str，抛 TypeError: Strings must be encoded
-     before hashing），异常会沿着 cache.get / cache.set 一路炸穿整条消息
-     pipeline。现在改为：xxhash 失败 → hashlib.md5，md5 再失败 → 内置
-     hash，任何哈希实现的异常都不允许抛给调用方。
-  2. 缓存键类型兜底：新增 _to_bytes()，非 str/bytes 的键（如 int）不再抛
-     异常，含孤立代理字符的字符串用 errors="replace" 编码；且保证同一键在
-     set 与 get 时必然落到同一个分片。
-  3. 降级提示只在首次发生时打印一次，避免每次缓存访问都刷日志。
-  4. 新增 15 项回归测试（tests/test_cache_hash_hardening.py）：哈希异常不外泄、
-     md5 与内置 hash 两级降级、分片稳定性、降级提示只出现一次、
-     正常路径（xxhash）行为完全不变、键类型强制转换。已验证把加固代码还原
-     成加固前的写法时，15 项中有 13 项失败（另 2 项不依赖加固）。
-  5. 修复 bot_name 自动提取「静默失效」（自 v4.0.11 起存在）。根因是
-     main.py::_ensure_bot_name 里调用 AstrBot 的
-     persona_manager.resolve_selected_persona 时**漏了 await** —— 该方法是
-     async def，于是解包 coroutine 抛 TypeError: cannot unpack non-iterable
-     coroutine object，又被外层的 except 吞成一条 WARN。
-     后果是 bot_name 永远为空 → _sanitize_ai_text() 退化为空操作 →
-     v4.0.11 的「注入文本不得自称 AI」修复实际从未生效。
-     现改为 inspect.isawaitable 兼容写法：async 版本会 await，同步版本直接取用，
-     跨 AstrBot 版本都安全。
-     同时修正测试根因：原 tests/test_bot_name.py 用**同步** MagicMock 桩
-     (return_value=(...))，桩与真身不同构，所以这个 bug 测试里完全看不出来。
-     现改为按真实签名实现的 async + keyword-only 桩，并新增回归锁定项；
-     已验证把 await 去掉时 4 项测试立刻失败。
-  6. 修正 v4.0.14 两条时序敏感的不稳定断言：test_budget_cuts_off_hanging_
-     provider 与 test_budget_allows_second_attempt_when_it_fits 原先取
-     budget = 2 × 时间片 的取值，正好卡在守卫线上；由于 asyncio 把定时器
-     交给 selector 时会向下取整到毫秒，第一次尝试可能提前不到 1ms 返回，
-     导致「第二次是否被放行」随调度抖动。现改为留有余量的预算取值，
-     并补上说明。生产逻辑未做任何改动。
-  7. 测试：全量用例 207 项通过。
+  初识期 → 深化期 → 承诺期 → 共生期，好感度与亲密度按不同权重共同推进；
+  关系变差时还会进入冷淡期 / 反感期 / 敌对期，有真实的「变坏」路径。
+  阶段跃迁带滞后带与保护分，不会因为一次波动就反复横跳或掉级。
 
 
-  v4.0.14 优化内容（by foorgange）：
+  【AI 自主生成态度与关系描述】
 
-  1. 情感分析接入「带总时间预算的备选链」。改动前只选 1 个 provider，然后对
-     同一个 provider 重试 3 次 × 30 秒超时，最坏约 90 秒才降级到本地兜底，
-     而且主 provider 一旦不可用就完全没有冗余。现在改为：在
-     emotion_llm_time_budget 秒的总预算内，沿备选链依次尝试
-     （辅助LLM → 会话主LLM → 当前配置文件的回退模型列表 → 其它 provider，
-     按 id 去重），最多尝试 emotion_llm_max_providers 个，任一成功即返回；
-     预算耗尽则降级到本地兜底。单次时间片 = min(30 秒, 预算 / 尝试个数)
-     且不超过剩余预算，因此单个挂住的模型不会吃掉全部预算。
-  2. 新增两个配置项：emotion_llm_time_budget（默认 45 秒，范围 10~300）、
-     emotion_llm_max_providers（默认 3，范围 1~10）。留空或非法值一律回退
-     默认，不会导致插件加载失败。
-  3. 只读复用用户已有的回退模型配置：备选链第 3 段直接读取当前会话配置文件
-     的 provider_settings.fallback_chat_models，因此不必再配置一遍。
-     全程只读，不修改任何 provider / provider_settings，
-     **不影响 AstrBot 主对话自身的退避重试机制**。
-  4. 兼容性：只有一个候选 provider 时保留原有的「同一 provider 重试 3 次」
-     语义（含退避等待）；_execute_llm_call 不传 timeout 的旧调用方式继续可用。
-  5. 测试：新增 34 项回归测试（备选链顺序与去重、预算封顶、失败切换、
-     单候选重试、配置项边界、provider_settings 只读性），
-     全量用例 190 项通过。
+  由独立的情感分析模型结合长期记忆与最近几轮对话，用第一人称口语描述
+  「我现在怎么看你」「我们是什么关系」，读起来像真的在相处。
 
 
-  v4.0.13 修复内容（by foorgange）：
+  【长期记忆】
 
-  1. 修复 /查看好感 <id> 输出重复「用户」字样：第一行原本显示为
-     「【用户 用户3418451176 完整情感状态】」。根因是两边都加了前缀——
-     RankingManager._format_user_display() 的契约本身就是自带「用户」前缀
-     （排行榜里 {rank}. {display_name} 是独立使用的），而头部模板又写了一次。
-     现模板去掉多余的「用户」，输出「【用户3418451176 完整情感状态】」，
-     与非管理员版 /好感度 的「用户{id}」风格一致。纯显示层修复，不动情感逻辑。
-  2. 测试：新增 4 项回归测试，且用的是真实的 _format_user_display（它才是加前缀的
-     源头，stub 掉就测不出该 bug）；已验证把 bug 放回去时 4 项全部失败。
-     全量用例 156 项通过。
+  短期缓存 + 长期落盘 + 重要事件队列，跨重启保留关系轨迹；
+  只有真正重要的事才会被记进长期记忆。
 
 
-  v4.0.12 修复内容（by foorgange）：
+  【全局心情】
 
-  1. 情感分析不再阻塞回复收尾。情感分析（辅助 LLM 调用）实测单次耗时
-     7~11 秒，而它挂在 on_llm_response 钩子上，该钩子由
-     astr_agent_hooks.on_agent_done 通过 await 触发，因此会拖慢回复收尾
-     与后续消息处理（失败路径更糟：3 次 × 30s 超时全在同一个 provider）。
-     现改为「同步判定 + 后台分析」两段式：标记剥离、更新判定、心情轻量
-     信号、状态展示、状态落盘仍在同步段完成（微秒级），只有耗时的
-     分析调用与其后的状态应用、记忆写入转入 asyncio 后台任务。
-     注意 resp.completion_text 的所有改动仍发生在回复发出之前；
-     情感数值更新延后到后台任务完成时生效（下一轮对话可见）。
-  2. 后台任务的并发保护：get_user_state 返回的是缓存里的同一个状态对象，
-     同一用户若并发跑多个分析会互相覆盖 force_update_counter 与数值更新。
-     现同一用户同时只允许一个后台分析（本轮跳过，等下一轮）。
-  3. 插件关闭时先给在跑的分析 3 秒自然收尾再取消，避免在状态写盘中途
-     被打断；取消后正常清空任务登记表。
-  4. 测试：新增 14 项后台任务回归测试（非阻塞性、同用户串行、异常吞掉、
-     CancelledError 传播、umo 透传不丢失、关闭清理），全量用例 152 项通过。
+  心情由所有对话共享，随每条消息实时演进，可在对话中显示当前心情与强度。
 
 
-  v4.0.11 修复内容（by foorgange）：
+  【智能更新】
 
-  1. 修复注入上下文与人设冲突：主对话注入块开头写死了
-     「你是一个具有丰富情感的AI助手」。该块追加在**用户消息之后**，
-     位置比 system_prompt 更靠后、权重更高，而很多人设（如「永雏塔菲」）
-     明确写了「你不是 AI」，模型会因此把自己当成通用助手，人格漂移。
-     现改为「以下是本次回应的情感状态参考，请保持你既有的身份设定与
-     说话风格不变」，不再做任何身份断言。
-  2. 注入文本的子内容（长期记忆关系轨迹、语气指导）同样过一遍
-     AI 字样清洗，避免模型生成的历史描述里残留的 "AI" 被注入；
-     bot_name 未解析时是安全的空操作。
-  3. 测试：新增 9 项人设一致性回归测试（含「整段注入文本不得出现独立
-     AI 字样」的硬性守卫）；版本号一致性用例改为动态读取 __version__，
-     一次校验 __init__.py / main.py / storage.py / metadata.yaml /
-     README.md 五处同步。全量用例 138 项通过。
+  关键词、时间、对话计数、模型标记四维判断，无需等到固定轮次才更新，
+  也不会每条消息都白跑一次分析。
 
 
-  v4.0.10 修复内容（by foorgange）：
+  【人设一致性】
 
-  1. 修复 xxhash>=4.0 下分片缓存整体崩溃：_get_shard 直接把 str 传给
-     xxhash.xxh64()，新版 xxhash 会抛
-     TypeError: Strings must be encoded before hashing。现统一编码为 bytes，
-     且 xxhash 3.x 下 xxh64(str) 与 xxh64(bytes) 结果一致，行为等价。
-  2. 修复情感分析模型选择失效：读取 provider 元信息时用了并不存在的
-     provider.name，取不到就退化成类名（如 ProviderOpenAIOfficial），
-     导致 secondary_llm_provider 配置完全失效、且永远落到 providers[0]。
-     线上实测落到的是视觉模型 Qwen3-VL-30B，而非配置声明的 deepseek。
-     现改为读取 meta()，并在留空时按配置说明使用主 LLM。
-  3. 修复主 LLM 解析取错配置：调用 get_using_provider() 时未传 umo，
-     AstrBot 会退回读**全局** cmd_config.json 的 default_provider_id，
-     而实际生效的是 WebUI 里的配置档案（如 ds-flash），两者可能指向不同
-     provider。线上就因此拿到了一个已失效的 provider（400 Model is
-     unavailable），情感分析静默退化为关键词兜底。现从事件透传 umo。
-  4. secondary_llm_model 此前从未被使用（死配置），现通过
-     text_chat(model=...) 真正生效。
-  5. 测试：修复「模拟 xxhash 缺失」用例无效的问题——仅 pop sys.modules
-     无法阻止 reload 时重新导入；新增 21 项 provider 解析、umo 透传与
-     分片哈希回归测试，全量用例 126 项通过。
+  注入的情感状态只作为参考，不会抢占你设定的人设；描述中也不会自称
+  「AI」，而是自动使用你配置的 bot 人设名。
 
 
-  v4.0.9 更新内容（by foorgange）：
+  【管理与运维】
 
-  1. 性能优化：主导情感判定改为单次遍历直接取值（实测快约 30%）；
-     全局心情信号提取改用扁平化关键词表与局部缓存（快约 10%）；
-     缓存大小估算结果复用、过期清理改为单次遍历、热点键改用堆取 TopN。
-  2. 健壮性：修复关键词表中"担心"重复定义导致 trust 信号丢失的问题；
-     静默吞异常的裸 except 改为捕获 Exception，便于排查。
-  3. 数据安全：存档写入改为复用同一份字节串，避免重复编码；
-     备份改用 copyfile，减少一次元数据同步。
-  4. 测试：新增 27 项 v4.0.9 优化回归测试，全量用例 90 项通过。
+  完整的用户 / 管理员命令（好感度、亲密度、态度、关系、排行榜、隐私级别、
+  备份与恢复），以及自动备份、数据迁移与互动统计修复。
 
 
-  v4.0.7 修复内容（by foorgange）：
+  【性能】
 
-  1. 全局心情实时演进：心情随每条对话实时变化（关键词/语气/颜文字分析），
-     强度由「8 维总和/2」（0-100）改为「主导情绪值/100」（0~1），加入情绪
-     对冲、强消息冲高与主导情绪单一化，显示如 强度: 0.78/1。
-  2. 心情持久化自动迁移：旧版 0-100 强度文件加载时自动按新口径重算。
+  异步非阻塞设计 + 分片缓存，情感分析在后台完成，不会拖慢 AI 的回复。
 
 
-  v4.0.6 修复内容（by foorgange）：
+  本项目基于原作者 asakiyoshi 的 EmotionAI Pro 修复与维护。
 
-  1. 心情改为 bot 全局共享字段，所有用户看到同一心情（独立持久化，
-     防单一用户刷爆）。
-  2. 新增 bot_name 配置项，关系/态度描述中的"AI"字样自动替换为 bot 人设名，
-     首次启动自动提取，为空时不替换。
-  3. /好感度"下一阶段："字段修复，现显示真正的下一阶段阈值。
-  4. 多项崩溃修复：调试命令 _is_admin、/清理初始用户 handler、互动计数去重、
-     /修复互动统计、stability_score 的 -inf、/设置态度 /设置关系 格式校验、
-     缓存失效、/隐私级别 落盘、cache.py 移除 xxhash 裸导入。
-  5. 缓存安全：全局心情只改显示层与独立持久化，不触碰
-     inject_enhanced_context 注入结构。
-
-
-  v4.0.5 修复内容（by foorgange）：
-
-  1. /好感度 新增「心情 + 强度」实时显示。
-  2. 管理员 /查看好感 强度显示修复：原误用 8 维原始和（0-800）标注 %，
-     会显示 300% 等错误值，现归一化到 0-100。
-
-
-  v4.0.4 修复内容（by foorgange）：
-
-  1. 修复"无效的态度描述格式"报错：放行描述中的常见中文标点，并将态度/
-     关系描述限制及截断兜底统一到 20 字。
-
-
-  v4.0.3 修复内容（by foorgange）：
-
-  1. 修复 LLM 上下文缓存命中率暴跌问题：情感状态块会随每条消息变化却被追加
-     到 system_prompt 末尾，导致前缀缓存失效（跌至 25% 以下）。现移至
-     extra_user_content_parts，命中率恢复至 97%。
-
-
-  v4.0.2 修复内容（by foorgange）：
-
-  1. 修复好感度永不更新的核心 bug：should_update_emotion() 返回值解包数量
-     不匹配导致 ValueError 崩溃。
-  2. 放宽态度/关系描述的正则验证，并同步 emotion_expert 截断上限
-     （30 -> 50 字）。
-
-  部分修复已向上游仓库提交 PR，不附带链接
 url: https://github.com/foorgange/astrbot-plugin-emotionai_pro
 tags:
   - emotion
