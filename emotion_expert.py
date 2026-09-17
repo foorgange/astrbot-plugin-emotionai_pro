@@ -817,9 +817,13 @@ class EmotionAnalysisExpert:
                     else:
                         updates['attitude_text'] = "友好交流"
                 else:
-                    # 保留当前描述，不覆盖（下游 line ~922 会用 state.descriptions 兜底）
-                    updates['relationship_text'] = state.descriptions.relationship
-                    updates['attitude_text'] = state.descriptions.attitude
+                    # 保留当前描述，不覆盖。
+                    # ⚠️ 参数名是 current_state（不是 state）—— 写成 state 会抛
+                    # NameError，被本方法外层宽泛的 `except Exception` 吞掉，
+                    # 静默退化到「文本提取」兜底，返回写死的「正常关系/友好交流」，
+                    # 看起来就像开关完全没生效。
+                    updates['relationship_text'] = current_state.descriptions.relationship
+                    updates['attitude_text'] = current_state.descriptions.attitude
                 
                 logger.info(f"成功解析JSON情感分析结果，包含 {len(updates)} 个更新")
                 return updates

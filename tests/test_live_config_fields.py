@@ -315,5 +315,94 @@ class TestPluginWiresTheFields(unittest.TestCase):
         )
 
 
+class TestAiTextGenerationSwitchBehaviour(unittest.TestCase):
+    """「启用 AI 自主生成文本描述」开关必须有**真实行为**差异
+
+    ⚠️ 这里刻意做成行为测试而不是源码断言：
+    该开关的关闭分支曾经写成 `state.descriptions.attitude`，而方法参数名是
+    `current_state` —— 于是抛 NameError，被方法外层宽泛的 `except Exception`
+    吞掉，静默退化到「文本提取」兜底返回写死的「正常关系/友好交流」。
+    源码里 `self.enable_ai_text_generation` 看起来完全正确，
+    只有真正跑一遍才能发现开关其实没生效。
+    """
+
+    def _payload(self, favor=1):
+        return (
+            '{"emotion_updates": {"favor": %d},'
+            ' "relationship": "AI生成的关系", "attitude": "AI生成的态度"}' % favor
+        )
+
+    def test_off_keeps_user_set_descriptions(self):
+        """关闭时必须保留用户手工设置的描述，而不是写死的兜底文案"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(enable_ai_text_generation=False)
+        state = EnhancedEmotionalState(user_key="u")
+        # 先设成非默认值，才能区分「保留原值」与「被覆盖成兜底文案」
+        state.descriptions.attitude = "手工态度"
+        state.descriptions.relationship = "手工关系"
+
+        out = expert._parse_emotion_analysis(self._payload(), state)
+
+        self.assertEqual(out["attitude_text"], "手工态度",
+                         "关闭开关后态度描述被改写（开关未生效）")
+        self.assertEqual(out["relationship_text"], "手工关系",
+                         "关闭开关后关系描述被改写（开关未生效）")
+        # 明确排除「静默退化成兜底文案」这一种失败形态
+        self.assertNotIn(out["attitude_text"], ("友好交流",),
+                         "落到了写死的兜底文案 —— 极可能是关闭分支抛异常被吞")
+        self.assertNotIn(out["relationship_text"], ("正常关系",),
+                         "落到了写死的兜底文案 —— 极可能是关闭分支抛异常被吞")
+
+    def test_on_uses_ai_generated_descriptions(self):
+        """开启时必须采用 LLM 返回的描述"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(enable_ai_text_generation=True)
+        state = EnhancedEmotionalState(user_key="u")
+        state.descriptions.attitude = "手工态度"
+        state.descriptions.relationship = "手工关系"
+
+        out = expert._parse_emotion_analysis(self._payload(), state)
+
+        self.assertEqual(out["attitude_text"], "AI生成的态度")
+        self.assertEqual(out["relationship_text"], "AI生成的关系")
+
+    def test_off_does_not_trigger_fallback(self):
+        """关闭时不能让解析整体失败（否则连 favor 更新都会丢）"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(change_min=-3, change_max=3,
+                              enable_ai_text_generation=False)
+        state = EnhancedEmotionalState(user_key="u")
+        out = expert._parse_emotion_analysis(self._payload(favor=99), state)
+        self.assertEqual(out["favor"], 3,
+                         "识别失败：favor 未按配置钳制到 3，可能落到了文本提取兜底")
+
+    def test_description_branch_uses_correct_parameter_name(self):
+        """关闭分支必须引用 current_state（而非不存在的 state）
+
+        这是上面 NameError 的直接回归防线：AST 层面确认
+        `_parse_emotion_analysis` 方法体内没有裸露的 `state` 名字。
+        """
+        import ast
+
+        src = (Path(__file__).resolve().parent.parent / "emotion_expert.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_parse_emotion_analysis":
+                params = [a.arg for a in node.args.args]
+                self.assertIn("current_state", params)
+                self.assertNotIn("state", params)
+                bare = [n.lineno for n in ast.walk(node)
+                        if isinstance(n, ast.Name) and n.id == "state"]
+                self.assertEqual(bare, [],
+                                 f"方法内出现未定义的 `state`（行号 {bare}）")
+                return
+        self.fail("未找到 _parse_emotion_analysis 方法")
+
+
 if __name__ == "__main__":
     unittest.main()
