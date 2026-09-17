@@ -19,6 +19,7 @@ from astrbot.core.agent.message import TextPart
 # 导入优化后的模块
 from .stream_filter import StreamingMarkerFilter
 from .config import PluginConfig, PrivacyLevel
+from .constants import EmotionConstants
 from .models import EnhancedEmotionalState
 from .storage import UserStateRepository, BackupManager
 from .cache import ShardedTTLCache
@@ -42,7 +43,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.18")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.19")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -52,6 +53,20 @@ class EmotionAIProPlugin(Star):
 
         # 配置验证和初始化
         self.config = self._load_and_validate_config(config)
+
+        # 把用户配置的数值边界注入状态模型
+        #
+        # ⚠️ 必须在这里做（v4.0.19 修正）：`constants.EmotionConstants` 里的
+        # MAX_FAVOR / MAX_INTIMACY 是出厂默认值，而 `models` 的
+        # `_validate_core_values` 会按它们钳制数值。若不同步注入，用户把
+        # 好感度上限设成 200、用 /设置好感 写到 200 时，会被静默削回 100，
+        # 连复合评分也一起被压低（150 -> 100），而用户完全看不出原因。
+        EmotionConstants.configure(
+            favour_min=self.config.favour_min,
+            favour_max=self.config.favour_max,
+            intimacy_min=self.config.intimacy_min,
+            intimacy_max=self.config.intimacy_max,
+        )
 
         # 获取规范的数据目录
         data_dir = StarTools.get_data_dir() / "emotionai_pro"

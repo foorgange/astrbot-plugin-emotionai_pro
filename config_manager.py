@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from astrbot.api import logger
 
 from .config import PluginConfig
+from .constants import EmotionConstants
 
 class ConfigManager:
     """配置管理器 - 增强的热重载支持"""
@@ -143,6 +144,25 @@ class ConfigManager:
             logger.error(f"检查配置变化失败: {e}")
             self._error_count += 1
     
+    def _apply_numeric_bounds(self, config: PluginConfig) -> None:
+        """把配置里的数值边界同步到状态模型
+
+        与 main.py::__init__ 里的注入是同一件事，区别在于这里是热重载路径。
+        不同步的后果：用户在配置界面把「好感度最大值」从 100 改成 200，
+        配置确实更新了，但 `models._validate_core_values` 仍按旧的 100 钳制，
+        表现就是"配置生效了、数值却写不上去"。
+        """
+        try:
+            EmotionConstants.configure(
+                favour_min=config.favour_min,
+                favour_max=config.favour_max,
+                intimacy_min=config.intimacy_min,
+                intimacy_max=config.intimacy_max,
+            )
+        except Exception as e:  # noqa: BLE001
+            # 边界同步失败不该影响配置更新本身，保持旧边界即可
+            logger.warning(f"同步数值边界失败，保持原边界: {e}")
+
     async def _reload_config(self, new_config_data: Dict[str, Any]):
         """重新加载配置"""
         try:
@@ -181,7 +201,11 @@ class ConfigManager:
                 if not self._validate_config(new_config):
                     logger.error("新配置验证失败，保持当前配置")
                     return
-                
+
+                # 数值边界要跟着热重载一起变，否则用户改了「好感度最大值」
+                # 后，状态模型仍按旧边界钳制，出现"配置已更新但数值不生效"。
+                self._apply_numeric_bounds(new_config)
+
                 # 通知监听器（在更新当前配置之前）
                 logger.info(f"通知 {len(self._listeners)} 个监听器配置变更")
                 
@@ -305,6 +329,9 @@ class ConfigManager:
                 # 验证新配置
                 if not self._validate_config(new_config):
                     raise ValueError("新配置验证失败")
+                
+                # 与热重载同理：边界变更必须同步到状态模型
+                self._apply_numeric_bounds(new_config)
                 
                 # 保存到文件
                 self._save_config(new_config)

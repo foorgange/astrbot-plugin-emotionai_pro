@@ -339,6 +339,12 @@ class EnhancedEmotionalState:
     
     # 有效的关系阶段列表
     VALID_STAGES: ClassVar[List[str]] = ["初识期", "深化期", "承诺期", "共生期", "冷淡期", "反感期", "敌对期"]
+
+    # 有效的阶段「内部 key」列表。
+    # 注意与 VALID_STAGES 的区别：VALID_STAGES 是给用户看的中文名，
+    # 而 `_previous_stage` 存的是 relationship_manager 用的英文 key
+    # （INITIAL / DEEPENING / COMMITMENT / SYMBIOSIS），两者不可混用。
+    VALID_STAGE_KEYS: ClassVar[List[str]] = ["INITIAL", "DEEPENING", "COMMITMENT", "SYMBIOSIS"]
     
     def __post_init__(self):
         """初始化后处理"""
@@ -417,7 +423,11 @@ class EnhancedEmotionalState:
             'force_update_counter': self.force_update_counter,
             'last_force_update': self.last_force_update,
             'show_status': self.show_status,
-            'privacy_level': self.privacy_level
+            'privacy_level': self.privacy_level,
+            # 过渡状态：不落盘的话，重启后第一次判定会被当成"阶段刚跃迁"，
+            # 面板恒显一条假的「过渡完成」（见 from_dict 里的详细说明）
+            '_previous_stage': self._previous_stage,
+            '_previous_composite': self._previous_composite
         }
         return data
     
@@ -449,14 +459,40 @@ class EnhancedEmotionalState:
             descriptions_data = data.get('descriptions', {})
             descriptions = TextDescriptions(**descriptions_data)
             
-            return cls(
+            state = cls(
                 **base_data,
                 emotions=emotions,
                 stats=stats,
                 descriptions=descriptions
             )
-            
-        except (TypeError, ValueError, KeyError) as e:
+
+            # ⚠️ 必须恢复「过渡状态」的两个内部字段（v4.0.19 修正）
+            #
+            # `_previous_stage` / `_previous_composite` 是
+            # `DynamicWeightManager` 判定阶段升降与过渡保护的输入。旧版
+            # `from_dict` 从不恢复它们，于是每次从磁盘加载出来的状态都是
+            # `_previous_stage=None -> "INITIAL"`、`_previous_composite=0.0`：
+            #
+            #   previous_stage = state._previous_stage or "INITIAL"   # 恒为初识期
+            #   previous_stage != target_stage  ->  误判为"发生阶段跃迁"
+            #   -> 触发过渡保护，面板恒显「过渡完成」
+            #
+            # 结果就是：每次重启后第一次查询 /好感度，都会看到一条假的
+            # 「过渡完成」，且复合评分被 max(current, previous) 保护逻辑
+            # 用错误的基线参与计算。
+            #
+            # 存档里没有这两个键时（旧数据）保持默认，不强行猜测。
+            prev_stage = data.get('_previous_stage')
+            if isinstance(prev_stage, str) and prev_stage in cls.VALID_STAGE_KEYS:
+                state._previous_stage = prev_stage
+
+            prev_composite = data.get('_previous_composite')
+            if isinstance(prev_composite, (int, float)) and not isinstance(prev_composite, bool):
+                state._previous_composite = float(prev_composite)
+
+            return state
+
+        except (TypeError, ValueError, KeyError, AttributeError) as e:
             logger.error(f"从字典创建EnhancedEmotionalState失败: {e}")
             # 返回一个默认状态
             return cls(user_key=data.get('user_key', 'unknown'))

@@ -160,7 +160,15 @@ class UserStateRepository:
         if user_key in self._user_data:
             try:
                 return EnhancedEmotionalState.from_dict(self._user_data[user_key])
-            except (TypeError, KeyError, ValueError) as e:
+            except (TypeError, KeyError, ValueError, AttributeError) as e:
+                # ⚠️ AttributeError 必须在这里就抓住（v4.0.19 修正）：
+                # `from_dict` 内部用 `EmotionalMetrics(**emotions_data)` 展开子对象，
+                # 若存档里的 emotions 来自字段增删过的旧版本，dataclass 会抛
+                # AttributeError。旧版元组漏了它，异常便冒到
+                # `managers.UserStateManager.get_user_state` 的 `except Exception`，
+                # 那里直接 `return EnhancedEmotionalState(user_key=...)` ——
+                # **用户的全部数值被静默重置为 0**，且日志里只有一行笼统的
+                # "加载用户状态失败"。这里就地兜住，才能走到数据修复分支。
                 logger.error(f"用户 {user_key} 数据格式错误: {e}")
                 # 尝试修复损坏的数据
                 await self._try_repair_user_data(user_key)
@@ -168,17 +176,56 @@ class UserStateRepository:
         return None
     
     async def _try_repair_user_data(self, user_key: str):
-        """尝试修复损坏的用户数据"""
+        """尝试修复损坏的用户数据
+
+        ⚠️ 修复策略：**能救的字段先救回来，再补默认值**（v4.0.19 修正）。
+        旧实现直接拿一个全新的默认状态覆盖，等于借"修复"之名把用户的
+        好感度/亲密度/互动统计全部清零 —— 用户只看到数值莫名归零，
+        日志里却写着"已修复"。现在改为逐字段甄别：核心数值与统计若本身
+        合法就原地保留，只有确实非法或缺失的字段才退回默认值。
+        """
         async with self._lock:
-            if user_key in self._user_data:
-                try:
-                    # 创建一个默认状态
-                    default_state = EnhancedEmotionalState(user_key=user_key)
+            if user_key not in self._user_data:
+                return
+            try:
+                raw = self._user_data[user_key]
+                default_state = EnhancedEmotionalState(user_key=user_key)
+
+                if not isinstance(raw, dict):
+                    # 连字典都不是，只能整体重建
                     self._user_data[user_key] = default_state.to_dict()
                     await self.user_storage.save(self._user_data)
-                    logger.warning(f"已修复用户 {user_key} 的损坏数据")
-                except Exception as e:
-                    logger.error(f"修复用户数据失败: {e}")
+                    logger.warning(f"用户 {user_key} 数据非字典结构，已重建为默认状态")
+                    return
+
+                # 以默认状态为底，把存档里可用的字段逐个搬回来
+                # （只能成功构造出子对象的才采用，非法字段自然退回默认）
+                merged = default_state.to_dict()
+                salvaged = []
+                for field in ("favor", "intimacy", "relationship_stage",
+                              "stage_composite_score", "stage_progress",
+                              "force_update_counter", "last_force_update",
+                              "show_status", "privacy_level",
+                              "stats", "descriptions", "emotions"):
+                    if field not in raw:
+                        continue
+                    candidate = dict(merged)
+                    candidate[field] = raw[field]
+                    try:
+                        EnhancedEmotionalState.from_dict(candidate)
+                    except (TypeError, KeyError, ValueError, AttributeError):
+                        continue
+                    merged[field] = raw[field]
+                    salvaged.append(field)
+
+                self._user_data[user_key] = merged
+                await self.user_storage.save(self._user_data)
+                logger.warning(
+                    f"已修复用户 {user_key} 的损坏数据，保留字段: "
+                    f"{', '.join(salvaged) if salvaged else '无（全部重建）'}"
+                )
+            except Exception as e:
+                logger.error(f"修复用户数据失败: {e}")
     
     async def save_user_state(self, user_key: str, state: EnhancedEmotionalState):
         """保存用户状态 - 差异化更新"""
@@ -339,7 +386,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.0.18'
+            'plugin_version': '4.0.19'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'
