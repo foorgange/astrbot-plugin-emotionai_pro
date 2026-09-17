@@ -43,7 +43,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.19")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.20")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -68,6 +68,10 @@ class EmotionAIProPlugin(Star):
             intimacy_max=self.config.intimacy_max,
         )
 
+        # 把配置里的「插件处理优先级」应用到本插件的两个 LLM 钩子
+        # （v4.0.20：该配置项此前从未被读取，详见方法内注释）
+        self._apply_plugin_priority()
+
         # 获取规范的数据目录
         data_dir = StarTools.get_data_dir() / "emotionai_pro"
 
@@ -85,7 +89,11 @@ class EmotionAIProPlugin(Star):
         self.attitude_manager = AttitudeRelationshipManager()
         self.weight_manager = DynamicWeightManager()
         self.update_manager = SmartUpdateManager()
-        self.memory_system = EnhancedMemorySystem(self.repository)
+        self.memory_system = EnhancedMemorySystem(
+            self.repository,
+            # v4.0.20：把「情感意义阈值」真正传下去（此前该配置项无人读取）
+            significance_threshold=self.config.emotional_significance_threshold,
+        )
 
         # 缓存系统
         self.cache = ShardedTTLCache(
@@ -102,6 +110,11 @@ class EmotionAIProPlugin(Star):
             bot_name_provider=self._get_bot_name,
             time_budget=self.config.emotion_llm_time_budget,
             max_providers=self.config.emotion_llm_max_providers,
+            # v4.0.20：把「单次变化幅度」与「AI 文本描述开关」真正传下去，
+            # 否则这两个配置项在插件里没有任何读取点（死配置）。
+            change_min=self.config.change_min,
+            change_max=self.config.change_max,
+            enable_ai_text_generation=self.config.enable_ai_text_generation,
         )
 
         # 命令处理器
@@ -239,6 +252,64 @@ class EmotionAIProPlugin(Star):
             logger.error(f"配置验证失败，使用默认配置: {e!r}")
             return PluginConfig()
         
+    def _apply_plugin_priority(self) -> None:
+        """把配置里的「插件处理优先级」应用到本插件的事件钩子
+
+        ⚠️ 为什么要在运行时改，而不是直接把装饰器写成 `priority=self.config...`
+        （v4.0.20 修正）：
+        装饰器是在**类定义时**求值的，那时 `self.config` 还不存在。所以只能
+        先按默认值注册，等配置加载完再把真实优先级写回。
+
+        两个 LLM 钩子（请求注入 / 响应更新）原本硬编码 `priority=100000`，
+        而配置项 `plugin_priority`（默认也是 100000）从未被任何人读取 ——
+        用户把它调大或调小，钩子顺序纹丝不动。
+
+        AstrBot 的优先级是**运行时**从 `StarHandlerMetadata.extras_configs`
+        读取的（`StarHandlerRegistry` 排序 + 派发时实时比较），所以在这里
+        改就能生效；改完重新排一次序即可。
+
+        非法值/异常一律保持原状，绝不因为一个配置项影响插件可用性。
+        """
+        try:
+            priority = int(self.config.plugin_priority)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"插件优先级取值非法({self.config.plugin_priority!r})，保持默认 100000"
+            )
+            return
+
+        try:
+            from astrbot.core.star.star_handler import star_handlers_registry
+
+            # ⚠️ 不要自己拼 `{module}_{name}` 去查注册表：
+            # 插件模块被加载时的限定名由 AstrBot 决定（可能是
+            # `astrbot_plugin_emotionai_pro.main` 也可能带别的前缀），
+            # 猜错就静默失效。改为**按 handler_name 扫描**注册表，
+            # 再核对模块路径里含本插件包名，避免误伤其它插件同名函数。
+            module = type(self).__module__
+            plugin_pkg = module.split(".")[0]
+            targets = {"inject_enhanced_context", "process_smart_update"}
+            changed = 0
+            for md in star_handlers_registry._handlers:  # noqa: SLF001
+                if md.handler_name not in targets:
+                    continue
+                if plugin_pkg not in (md.handler_module_path or ""):
+                    continue
+                old = md.extras_configs.get("priority", 0)
+                md.extras_configs["priority"] = priority
+                changed += 1
+                logger.info(f"钩子 {md.handler_name} 优先级: {old} -> {priority}")
+
+            if not changed:
+                logger.warning("未在注册表中找到本插件的 LLM 钩子，跳过优先级设置")
+            else:
+                # 重排一次，使新优先级立即对后续消息生效
+                star_handlers_registry._handlers.sort(  # noqa: SLF001
+                    key=lambda h: -h.extras_configs.get("priority", 0)
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"应用插件优先级失败，保持原值: {e}")
+
     def _get_user_key(self, event: AstrMessageEvent) -> str:
         """获取用户键"""
         user_id = event.get_sender_id()
@@ -720,7 +791,17 @@ class EmotionAIProPlugin(Star):
 
     def _build_enhanced_context(self, state: EnhancedEmotionalState) -> str:
         """构建改进的主LLM上下文"""
-    
+
+        # 「启用 FavourPro 态度关系系统」开关（v4.0.20 修正）
+        #
+        # ⚠️ 这个开关以前是**死配置**：关掉它，态度/关系描述照样注入主 LLM。
+        # 现在关闭时把「态度倾向 / 关系描述」两行从注入文本里去掉 —— 模型
+        # 不再据此调整说话的语气倾向，只剩纯数值的情感参考。
+        #
+        # 注意只影响**注入**，不影响状态记录与面板显示：用户仍可用
+        # /查看好感 看到态度与关系，也仍可用 /设置态度、/设置关系 手工设置。
+        attitude_enabled = bool(getattr(self.config, "enable_attitude_system", True))
+
         # 获取语气指导
         tone_instruction = self.attitude_manager.get_tone_instruction(state)
     
@@ -742,6 +823,11 @@ class EmotionAIProPlugin(Star):
         # 明确写了「你不是 AI / 不要承认自己是 AI」。在注入文本里自称 AI 会与人设
         # 直接冲突，导致模型人格漂移（说话开始像通用助手而不是角色本身）。
         # 因此这里只描述「这是一份情感状态参考」，并显式要求保持既有身份与风格不变。
+        #
+        # 「态度倾向」一行受 enable_attitude_system 开关控制（关闭时不注入）
+        attitude_line = (
+            f"态度倾向：{state.descriptions.attitude}\n" if attitude_enabled else ""
+        )
         return f"""
 【机密情感系统 - 主对话模式】
 以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，
@@ -753,8 +839,7 @@ class EmotionAIProPlugin(Star):
 主导情感：{self.analyzer.get_dominant_emotion(state)}
 情感强度：{self._get_emotion_intensity(state)}/1
 关系阶段：{state.relationship_stage}
-态度倾向：{state.descriptions.attitude}
-好感度：{state.favor} | 亲密度：{state.intimacy}
+{attitude_line}好感度：{state.favor} | 亲密度：{state.intimacy}
 
 【语气指导】
 {tone_instruction}

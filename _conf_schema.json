@@ -30,16 +30,16 @@
     "hint": "设置亲密度的最高值，需大于亲密度最小值"
   },
   "change_min": {
-    "description": "好感度单次变化最小值",
+    "description": "好感度单次减少的最大幅度",
     "type": "int",
     "default": -10,
-    "hint": "设置好感度单次减少的最大幅度（通常填负数），需小于单次变化最大值"
+    "hint": "填负数，例如 -3 表示单次最多降 3 点。必须小于「单次增加的最大幅度」"
   },
   "change_max": {
-    "description": "好感度单次变化最大值",
+    "description": "好感度单次增加的最大幅度",
     "type": "int",
     "default": 5,
-    "hint": "设置好感度单次增加的最大幅度（通常填正数），需大于单次变化最小值"
+    "hint": "填正数，例如 3 表示单次最多涨 3 点。必须大于「单次减少的最大幅度」"
   },
   "admin_qq_list": {
     "description": "管理员QQ号列表",
@@ -51,19 +51,19 @@
     "description": "插件处理优先级",
     "type": "int",
     "default": 100000,
-    "hint": "设置插件处理消息的优先级（数字越大越先执行）"
+    "hint": "本插件两个钩子（上下文注入、情感更新）的执行优先级，数字越大越先执行。默认 100000，与插件默认顺序一致，不知道就别改"
   },
   "enable_attitude_system": {
-    "description": "启用 FavourPro 态度关系系统",
+    "description": "启用态度关系系统",
     "type": "bool",
     "default": true,
-    "hint": "开启后启用态度和关系的深度模拟"
+    "hint": "关闭后不再向主对话注入「态度倾向」描述（模型不再据此调整语气），但状态记录与 /查看好感 显示不受影响"
   },
   "enable_ai_text_generation": {
     "description": "启用 AI 自主生成文本描述",
     "type": "bool", 
     "default": true,
-    "hint": "开启后AI可以自主生成态度和关系描述文本"
+    "hint": "关闭后态度/关系描述不再由 AI 自动改写，保留你手工 /设置态度、/设置关系 的内容"
   },
   "global_privacy_level": {
     "description": "全局隐私级别",
@@ -87,7 +87,7 @@
     "description": "情感意义阈值",
     "type": "int", 
     "default": 5,
-    "hint": "达到此阈值的情感变化会存入长期记忆"
+    "hint": "情感意义达到此分数（1-10）才存入长期记忆。调低=记得更多细节，调高=只记重要事件"
   },
   "enable_secondary_llm": {
     "description": "启用辅助LLM进行情感分析",

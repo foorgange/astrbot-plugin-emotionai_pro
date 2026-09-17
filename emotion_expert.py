@@ -22,7 +22,8 @@ class EmotionAnalysisExpert:
     def __init__(self, cache: ShardedTTLCache, context=None,
                  secondary_llm_provider: str = None, secondary_llm_model: str = None,
                  bot_name_provider=None, time_budget: float = 45.0,
-                 max_providers: int = 3):
+                 max_providers: int = 3, change_min: int = -10,
+                 change_max: int = 5, enable_ai_text_generation: bool = True):
         self.cache = cache
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
@@ -33,6 +34,22 @@ class EmotionAnalysisExpert:
         self.llm_retry_delay = 1.0
         self._llm_available = True  # 跟踪LLM可用性
         self._llm_failures = 0  # 连续失败次数
+
+        # 单次情感变化幅度（v4.0.20 修正）
+        #
+        # ⚠️ 这两个值以前是**死配置**：配置界面能填、pydantic 能收、
+        # config_manager 会校验，但从来没有任何代码读它们 —— 真正生效的是
+        # 本文件里写死的 `max(-5, min(5, v))`。用户把「单次变化最大值」设成 3，
+        # 实际仍能一次涨 5 点，且完全看不出原因。
+        #
+        # 现在改为由配置驱动，并用下面的 _clamp_pair 做整对合法性检查：
+        # 只有「两个都是数值 且 change_min < change_max」时才采用，
+        # 否则整对退回默认值（和 EmotionConstants.configure 同一策略）。
+        self.change_min, self.change_max = self._clamp_pair(
+            change_min, change_max, -10, 5
+        )
+        # 是否允许 LLM 生成态度/关系描述文本；关闭时走本地兜底文案
+        self.enable_ai_text_generation = bool(enable_ai_text_generation)
 
         # 情感分析的总时间预算（秒）：预算耗尽即放弃 LLM 分析，走本地 smart_fallback。
         # 预算内按备选链依次尝试，最多 max_providers 个 provider。
@@ -46,6 +63,35 @@ class EmotionAnalysisExpert:
             self.max_providers = max(1, int(max_providers))
         except (TypeError, ValueError):
             self.max_providers = 3
+
+    @staticmethod
+    def _clamp_pair(low, high, default_low: int, default_high: int):
+        """校验「变化幅度」数值对，非法则整对退回默认值
+
+        策略与 `EmotionConstants.configure` 一致：**整对一起用或整对一起弃**。
+        只判 `low < high` 是不够的，还要挡住：
+          - 非数值（None / 字符串 / bool）
+          - 量级离谱（|v| > 1000）
+          - 两个都是正数或都是负数（如 3 / 2），这种组合语义上是错的
+        """
+        def _ok(v):
+            if v is None or isinstance(v, bool):
+                return False
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                return False
+            return abs(n) <= 1000
+
+        if not (_ok(low) and _ok(high)):
+            return default_low, default_high
+        low, high = int(low), int(high)
+        if low >= high:
+            return default_low, default_high
+        # 语义检查：减少幅度应为负、增加幅度应为正
+        if not (low <= 0 <= high):
+            return default_low, default_high
+        return low, high
 
     async def analyze_and_update_emotion(self, user_key: str, user_message: str, ai_response: str,
                                        current_state: EnhancedEmotionalState,
@@ -734,8 +780,17 @@ class EmotionAnalysisExpert:
                             # 确保是整数且在合理范围内
                             if isinstance(value, (int, float)):
                                 int_value = int(value)
-                                # 限制变化范围
-                                if emotion in ['favor', 'intimacy']:
+                                # 限制变化范围（v4.0.20：好感度改由配置驱动）
+                                #
+                                # ⚠️ 只有 favor 用配置的 change_min/change_max：
+                                # 这两个字段的定义就是「**好感度**单次变化幅度」
+                                # （原作者 v3.30 也只对 favor 做此钳制），
+                                # 套到 intimacy 上会擅自改变亲密度的一次性变化幅度。
+                                # intimacy 与其余情绪维度沿用原先的固定幅度。
+                                if emotion == 'favor':
+                                    int_value = max(self.change_min,
+                                                    min(self.change_max, int_value))
+                                elif emotion == 'intimacy':
                                     int_value = max(-5, min(5, int_value))
                                 else:
                                     int_value = max(-3, min(3, int_value))
@@ -746,15 +801,25 @@ class EmotionAnalysisExpert:
                         updates[emotion] = 0  # 缺失的情感设为0
                 
                 # 解析文本描述
-                if 'relationship' in data and data['relationship']:
-                    updates['relationship_text'] = str(data['relationship']).strip()[:20]  # 限制长度
-                else:
-                    updates['relationship_text'] = "正常关系"
+                #
+                # ⚠️ 「启用 AI 自主生成文本描述」开关（v4.0.20 修正）
+                # 这个开关以前是死配置：关掉它，态度/关系描述仍会由 LLM 生成。
+                # 现在关闭时**不改写**这两个字段（留空即被下游替换为当前值），
+                # 于是用户自己用 /设置态度、/设置关系 设的文案不会被 AI 覆盖。
+                if self.enable_ai_text_generation:
+                    if 'relationship' in data and data['relationship']:
+                        updates['relationship_text'] = str(data['relationship']).strip()[:20]  # 限制长度
+                    else:
+                        updates['relationship_text'] = "正常关系"
 
-                if 'attitude' in data and data['attitude']:
-                    updates['attitude_text'] = str(data['attitude']).strip()[:20]  # 限制长度
+                    if 'attitude' in data and data['attitude']:
+                        updates['attitude_text'] = str(data['attitude']).strip()[:20]  # 限制长度
+                    else:
+                        updates['attitude_text'] = "友好交流"
                 else:
-                    updates['attitude_text'] = "友好交流"
+                    # 保留当前描述，不覆盖（下游 line ~922 会用 state.descriptions 兜底）
+                    updates['relationship_text'] = state.descriptions.relationship
+                    updates['attitude_text'] = state.descriptions.attitude
                 
                 logger.info(f"成功解析JSON情感分析结果，包含 {len(updates)} 个更新")
                 return updates

@@ -242,38 +242,86 @@ class ConfigManager:
             logger.error(f"配置重载失败: {e}")
             raise
     
+    def _repair_invalid_pairs(self, config: PluginConfig) -> List[str]:
+        """修复「上下限填反」的字段对，返回被修复的字段说明
+
+        ⚠️ 为什么不再直接 `return False` 整份拒绝（v4.0.20 修正）：
+        旧做法是 `_validate_config` 一旦发现 `change_min >= change_max` 就返回
+        False，调用方随即「保持当前配置」或抛 ValueError —— 后果是用户**改了
+        别的任何配置都保存不上**，而提示只有一行含糊的「新配置验证失败」。
+        用户服务器上就真实存在 `change_min=3 / change_max=2` 这种组合
+        （填反了符号），导致他的配置保存长期静默失败。
+
+        现在的策略与 v4.0.18「逐字段回退」一致：**只把出问题的那一对退回默认
+        值**，其余配置照常保存生效，并把修复内容明确打出来。
+
+        返回被修复项的说明列表（空列表表示没有任何问题）。
+        """
+        repaired: List[str] = []
+
+        def _fix_pair(low_field: str, high_field: str) -> None:
+            low = getattr(config, low_field)
+            high = getattr(config, high_field)
+            if low < high:
+                return
+            default_low = PluginConfig.model_fields[low_field].default
+            default_high = PluginConfig.model_fields[high_field].default
+            setattr(config, low_field, default_low)
+            setattr(config, high_field, default_high)
+            repaired.append(
+                f"{low_field}={low} >= {high_field}={high} "
+                f"→ 已重置为 {default_low} / {default_high}"
+            )
+
+        _fix_pair("favour_min", "favour_max")
+        _fix_pair("intimacy_min", "intimacy_max")
+        _fix_pair("change_min", "change_max")
+
+        if config.force_update_interval <= 0:
+            default = PluginConfig.model_fields["force_update_interval"].default
+            repaired.append(
+                f"force_update_interval={config.force_update_interval} "
+                f"→ 已重置为 {default}"
+            )
+            config.force_update_interval = default
+
+        # 管理员列表里的非法项**逐个剔除**（而不是整份拒绝）
+        bad_admins = [
+            qq for qq in config.admin_qq_list
+            if not isinstance(qq, str) or not qq.isdigit()
+        ]
+        if bad_admins:
+            config.admin_qq_list = [
+                qq for qq in config.admin_qq_list
+                if isinstance(qq, str) and qq.isdigit()
+            ]
+            repaired.append(
+                f"admin_qq_list 剔除非法项 {bad_admins}"
+                f"（保留 {config.admin_qq_list}）"
+            )
+
+        return repaired
+
     def _validate_config(self, config: PluginConfig) -> bool:
-        """验证配置的有效性"""
+        """验证配置的有效性
+
+        v4.0.20 起：先**就地修复**非法的字段对，再复核。
+        仍然返回 bool 以兼容既有调用方，但正常路径下几乎不会返回 False ——
+        因为不该让一个填错的字段把整份配置（连带管理员列表）拖下水。
+        """
         try:
-            # 检查基本约束
-            if config.favour_min >= config.favour_max:
-                logger.error(f"配置验证失败: favour_min ({config.favour_min}) >= favour_max ({config.favour_max})")
-                return False
-            
-            if config.intimacy_min >= config.intimacy_max:
-                logger.error(f"配置验证失败: intimacy_min ({config.intimacy_min}) >= intimacy_max ({config.intimacy_max})")
-                return False
-            
-            if config.change_min >= config.change_max:
-                logger.error(f"配置验证失败: change_min ({config.change_min}) >= change_max ({config.change_max})")
-                return False
-            
-            if config.force_update_interval <= 0:
-                logger.error(f"配置验证失败: force_update_interval ({config.force_update_interval}) <= 0")
-                return False
-            
-            # 检查管理员列表格式
-            for qq in config.admin_qq_list:
-                if not isinstance(qq, str) or not qq.isdigit():
-                    logger.error(f"配置验证失败: 无效的管理员QQ号格式: {qq}")
-                    return False
-            
+            repaired = self._repair_invalid_pairs(config)
+            if repaired:
+                logger.warning(
+                    "配置中存在非法取值，已按字段修复（其余配置照常生效）: "
+                    + "; ".join(repaired)
+                )
             return True
-            
+
         except Exception as e:
             logger.error(f"配置验证过程中出错: {e}")
             return False
-    
+
     def _log_config_changes(self, old_config: PluginConfig, new_config: PluginConfig):
         """记录配置变化"""
         changes = []

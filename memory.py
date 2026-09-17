@@ -53,9 +53,28 @@ class InteractionRecord:
 class EnhancedMemorySystem:
     """增强记忆系统 - 完全优化版本"""
     
-    def __init__(self, repository: UserStateRepository, max_long_term_memory: int = 1000):
+    def __init__(self, repository: UserStateRepository, max_long_term_memory: int = 1000,
+                 significance_threshold: int = None):
         self.repository = repository
         self.max_long_term_memory = max_long_term_memory
+
+        # 存入长期记忆的「情感意义」门槛（v4.0.20 修正）
+        #
+        # ⚠️ 这里以前写死用 `UpdateThresholds.EMOTIONAL_SIGNIFICANCE`(=5)，
+        # 而配置界面上的「情感意义阈值」（默认也是 5）从未被任何代码读取 ——
+        # 用户把它改成 8 或 3，长期记忆的筛选行为完全不变。
+        #
+        # 现在改为可注入：传 None / 非法值时退回常量默认值。
+        try:
+            # ⚠️ bool 必须先挡掉：`int(True) == 1` 会伪装成合法阈值 1
+            if significance_threshold is None or isinstance(significance_threshold, bool):
+                raise ValueError
+            threshold = int(significance_threshold)
+            if not 1 <= threshold <= 10:
+                raise ValueError
+        except (TypeError, ValueError):
+            threshold = UpdateThresholds.EMOTIONAL_SIGNIFICANCE
+        self.significance_threshold = threshold
         
         # 短期记忆缓存 - 按用户分组
         self.short_term_memory = ShardedTTLCache(
@@ -227,7 +246,8 @@ class EnhancedMemorySystem:
             await self._add_to_short_term_memory(user_key, new_interaction)
             
             # 如果情感意义重大，存入长期记忆
-            if emotional_significance >= UpdateThresholds.EMOTIONAL_SIGNIFICANCE:
+            # v4.0.20：门槛改由配置的「情感意义阈值」驱动，不再是写死的常量
+            if emotional_significance >= self.significance_threshold:
                 await self._add_to_long_term_memory(user_key, new_interaction)
                 
                 # 添加到重要事件
