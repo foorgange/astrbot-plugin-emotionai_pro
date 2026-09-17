@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.0.17
+# EmotionAI Pro - 融合版情感智能插件 v4.0.18
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -13,6 +13,46 @@
 ---
 
 ## 更新日志
+
+### v4.0.18（修复「配置界面设了管理员却提示权限不足」）
+
+1. **问题**
+   在插件配置界面把 QQ 号填进「管理员QQ号列表」并保存后，使用
+   `/设置好感`、`/查看好感` 等管理员命令仍然提示「权限不足」。
+
+   根因是一条**静默丢配置**的链路：
+
+   - 配置界面（`_conf_schema.json`）对「好感度/亲密度上下限」「单次变化范围」
+     这些数值项**没有任何取值约束**，用户完全可以填出
+     `intimacy_min = -100`、`change_min = 3` 这类组合；
+   - 但 `config.py` 里把它们声明成了 `ge=0` / `le=0`，pydantic 直接抛
+     `ValidationError`；
+   - `main.py` 的兜底写法是 `return PluginConfig()` —— **整份配置被默认值覆盖**，
+     默认 `admin_qq_list` 是空列表；
+   - 于是 `_is_admin()` 永远返回 `False`，用户看到的就是「权限不足」。
+   - 更糟的是日志只落了 `ValidationError` 的第一行，用户连是哪个字段出错都看不到。
+
+2. **方案**
+   - `config.py`：这几个数值区间改为**只做量级约束**（±1000），不再用"下限必须 ≤0 /
+     上限必须 ≥0"去猜用户意图；`min < max` 的关系仍由
+     `ConfigManager._validate_config` 单独校验。
+   - `main.py`：配置加载改为**逐字段回退**——整体校验失败时，只把真正非法的字段退回
+     默认值，其余配置（尤其是 `admin_qq_list`）照常生效；同时把出错字段名、原始值、
+     错误类型完整打进日志。未知键直接忽略。
+   - `config_manager.py`：热重载 / 运行时更新走同一套逐字段回退策略。
+   - `command_handlers.py`：权限不足的回复不再是一句干巴巴的提示，改为附带
+     **当前发送者 ID** 与**当前生效的管理员列表**，并提示"若列表为空说明配置已回退"，
+     用户可自助定位。
+   - `schema_validator.py`、`_conf_schema.json`：同步放宽为量级约束，配置界面的
+     提示文案补上"需大于/小于对应值"。
+
+3. **验证**
+   - 新增 `tests/test_admin_config_resilience.py`（14 项），覆盖
+     ①服务器真实配置必须被接受 ②非法字段只能回退自身、不连坐 `admin_qq_list`
+     ③管理员门禁放行 ④权限提示可自助排查；
+     将 `config.py` 临时还原为旧约束后该文件立即报 2 失败 + 2 错误并**指名
+     `intimacy_min` / `change_min`**，证明测试确实咬住了这个 bug。
+   - 全量单测通过。
 
 ### v4.0.17（日志规范合规：全面改用 AstrBot 官方 logger）
 

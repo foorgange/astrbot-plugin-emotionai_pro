@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 import hashlib
 
+from pydantic import ValidationError
+
 from astrbot.api import logger
 
 from .config import PluginConfig
@@ -146,9 +148,34 @@ class ConfigManager:
         try:
             async with self._lock:
                 old_config = self.current_config
-                
+
                 # 创建新配置实例
-                new_config = PluginConfig(**new_config_data)
+                # 与 main.py::_load_and_validate_config 同一策略：单个坏字段
+                # 只回退该字段，不让整份配置（尤其是 admin_qq_list）失效。
+                try:
+                    new_config = PluginConfig(**new_config_data)
+                except ValidationError as e:
+                    bad = [
+                        f"{(err.get('loc') or ('?',))[0]}="
+                        f"{new_config_data.get((err.get('loc') or ('?',))[0], '<缺失>')!r}"
+                        f"({err.get('type', 'unknown')})"
+                        for err in e.errors()
+                    ]
+                    logger.warning(
+                        "热重载配置校验失败，以下字段回退为默认值（其余照常生效）: "
+                        + ", ".join(bad)
+                    )
+                    sanitized = dict(new_config_data)
+                    for err in e.errors():
+                        loc = err.get("loc") or ()
+                        if loc and loc[0] in sanitized:
+                            field = str(loc[0])
+                            sanitized[field] = PluginConfig.model_fields[field].default
+                    try:
+                        new_config = PluginConfig(**sanitized)
+                    except Exception as retry_error:  # noqa: BLE001
+                        logger.error(f"配置热重载失败，保持当前配置: {retry_error}")
+                        return
                 
                 # 验证新配置
                 if not self._validate_config(new_config):
@@ -255,8 +282,25 @@ class ConfigManager:
                 # 应用更新
                 config_dict.update(updates)
                 
-                # 创建新配置实例
-                new_config = PluginConfig(**config_dict)
+                # 创建新配置实例（同样逐字段回退，避免整体失败）
+                try:
+                    new_config = PluginConfig(**config_dict)
+                except ValidationError as e:
+                    bad = [
+                        f"{(err.get('loc') or ('?',))[0]}"
+                        f"({err.get('type', 'unknown')})"
+                        for err in e.errors()
+                    ]
+                    logger.warning(
+                        "更新后的配置校验失败，以下字段回退为默认值: " + ", ".join(bad)
+                    )
+                    sanitized = dict(config_dict)
+                    for err in e.errors():
+                        loc = err.get("loc") or ()
+                        if loc and loc[0] in sanitized:
+                            field = str(loc[0])
+                            sanitized[field] = PluginConfig.model_fields[field].default
+                    new_config = PluginConfig(**sanitized)
                 
                 # 验证新配置
                 if not self._validate_config(new_config):

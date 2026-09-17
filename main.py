@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import asdict
 
+from pydantic import ValidationError
+
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.provider import LLMResponse, ProviderRequest
@@ -40,7 +42,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.17")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.18")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -173,11 +175,53 @@ class EmotionAIProPlugin(Star):
             "max_dirty_keys": 1000,
             "backup_retention_days": 7
         })
-        
+
+        # 用模型字段表过滤未知键，避免用户配置里的多余项触发 ValidationError
+        known_fields = set(PluginConfig.model_fields)
+        config_dict = {k: v for k, v in config_dict.items() if k in known_fields}
+
+        # 先整体尝试；失败则**逐字段回退到默认值**，绝不让单个坏字段拖垮整份配置
+        #
+        # ⚠️ 这里曾是一个「静默丢配置」的坑（v4.0.18 修复）：
+        # 旧写法 except 分支直接 `return PluginConfig()`，于是用户只要把
+        # intimacy_min / change_min 填成界面允许、但 pydantic 不认的值，
+        # 整份配置（包括 admin_qq_list）就被默认值覆盖 —— 表现就是
+        # 「界面里明明设了管理员，用管理员命令却提示权限不足」。
+        # 更糟的是 logger 只落了 ValidationError 的第一行，
+        # 用户连是哪个字段出错都看不到。所以：
+        #   ① 逐字段甄别，只把真正非法的字段退回默认值；
+        #   ② 把出错字段名 + 原始值完整打出来（多行合并成一行，避免被日志截断）。
         try:
             return PluginConfig(**config_dict)
-        except Exception as e:
-            logger.error(f"配置验证失败: {e}, 使用默认配置")
+        except ValidationError as e:
+            bad_fields = []
+            for err in e.errors():
+                loc = err.get("loc") or ()
+                field = str(loc[0]) if loc else "?"
+                bad_fields.append(
+                    f"{field}={config_dict.get(field, '<缺失>')!r}"
+                    f"({err.get('type', 'unknown')})"
+                )
+            logger.error(
+                "配置校验失败，以下字段将回退为默认值（其余配置照常生效）: "
+                + ", ".join(bad_fields)
+            )
+
+            sanitized_dict = dict(config_dict)
+            for err in e.errors():
+                loc = err.get("loc") or ()
+                if loc and loc[0] in sanitized_dict:
+                    field = str(loc[0])
+                    sanitized_dict[field] = PluginConfig.model_fields[field].default
+
+            try:
+                return PluginConfig(**sanitized_dict)
+            except Exception as retry_error:  # noqa: BLE001
+                logger.error(f"逐字段回退后仍未通过校验，使用全默认配置: {retry_error}")
+                return PluginConfig()
+        except Exception as e:  # noqa: BLE001
+            # 完整打印（多行也打到一行里），否则用户根本不知道改哪里
+            logger.error(f"配置验证失败，使用默认配置: {e!r}")
             return PluginConfig()
         
     def _get_user_key(self, event: AstrMessageEvent) -> str:

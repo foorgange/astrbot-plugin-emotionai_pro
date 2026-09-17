@@ -23,13 +23,26 @@ class RelationshipStage(str, Enum):
 
 class PluginConfig(BaseModel):
     """插件配置模型"""
+    #
+    # ⚠️ 数值区间的设计原则（v4.0.18 修正）
+    #
+    # 这四个「上下限」是**运行时钳制边界**，不是"上限必须为正 / 下限必须为负"。
+    # 配置界面（_conf_schema.json）对它们没有任何取值约束，用户完全可以填出
+    # intimacy_min=-100（亲密度允许为负）、change_min=3 / change_max=2
+    # 这类组合。旧版本把它们写成 ge=0 / le=0，于是 pydantic 抛 ValidationError，
+    # 而 main.py 的兜底是 `return PluginConfig()` —— **静默丢掉整份配置**
+    # （连带 admin_qq_list 变空，管理员命令全部提示「权限不足」）。
+    #
+    # 所以这里的约束只保证：① 取值在合理量级内 ② min < max 由
+    # ConfigManager._validate_config / ConfigValidator 单独检查，
+    # 不再由 pydantic 用"符号"去猜用户意图。
     session_based: bool = Field(default=False, description="是否启用会话独立的情感系统")
-    favour_min: int = Field(default=-100, ge=-1000, le=0, description="好感度最小值")
-    favour_max: int = Field(default=100, ge=0, le=1000, description="好感度最大值")
-    intimacy_min: int = Field(default=0, ge=0, le=100, description="亲密度最小值")
-    intimacy_max: int = Field(default=100, ge=0, le=1000, description="亲密度最大值")
-    change_min: int = Field(default=-10, ge=-100, le=0, description="好感度单次变化最小值")
-    change_max: int = Field(default=5, ge=0, le=100, description="好感度单次变化最大值")
+    favour_min: int = Field(default=-100, ge=-1000, le=1000, description="好感度最小值")
+    favour_max: int = Field(default=100, ge=-1000, le=1000, description="好感度最大值")
+    intimacy_min: int = Field(default=0, ge=-1000, le=1000, description="亲密度最小值")
+    intimacy_max: int = Field(default=100, ge=-1000, le=1000, description="亲密度最大值")
+    change_min: int = Field(default=-10, ge=-1000, le=1000, description="好感度单次变化最小值")
+    change_max: int = Field(default=5, ge=-1000, le=1000, description="好感度单次变化最大值")
     admin_qq_list: List[str] = Field(default_factory=list, description="管理员QQ号列表")
     plugin_priority: int = Field(default=100000, ge=1, le=1000000, description="插件处理优先级")
     enable_attitude_system: bool = Field(default=True, description="启用态度关系系统")

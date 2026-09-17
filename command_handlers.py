@@ -25,6 +25,33 @@ class BaseCommandHandler:
         """检查管理员权限"""
         return event.role == "admin" or event.get_sender_id() in self.config.admin_qq_list
 
+    def _admin_denied_message(self, event: AstrMessageEvent) -> str:
+        """权限不足时给出可自助排查的提示
+
+        历史坑：配置校验失败会让整份配置回退成默认值，admin_qq_list 变空，
+        用户看到「需要管理员权限」却完全不知道原因（他明明在配置界面填了 QQ 号）。
+        所以这里把**当前实际生效的管理员列表**和当前发送者 ID 一并打出来。
+        """
+        sender_id = event.get_sender_id()
+        admins = self.config.admin_qq_list or []
+        if admins:
+            return (
+                "【错误】需要管理员权限\n"
+                f"当前发送者: {sender_id}\n"
+                f"当前生效的管理员列表: {', '.join(str(a) for a in admins)}\n"
+                "提示: 若上面没有你的 QQ 号，说明配置未生效——"
+                "请检查插件配置里「管理员QQ号列表」是否已保存，"
+                "并确认其它数值项（好感/亲密度上下限等）填写合法，"
+                "否则整份配置会被判定无效而回退为默认值。"
+            )
+        return (
+            "【错误】需要管理员权限\n"
+            f"当前发送者: {sender_id}\n"
+            "当前生效的管理员列表为空 —— 说明插件配置未能加载，"
+            "已回退为默认配置。请检查插件配置界面中的数值项"
+            "（好感度/亲密度上下限、单次变化范围等）是否填写合法。"
+        )
+
     def _resolve_user_key(self, user_input: str) -> str:
         """解析用户标识符"""
         return self.user_manager.resolve_user_key(user_input, self.config.session_based)
@@ -191,7 +218,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_favor(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
         """设置好感度"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -227,7 +254,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_intimacy(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
         """设置亲密度"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -263,7 +290,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_attitude(self, event: AstrMessageEvent, user_input: str, attitude: str) -> AsyncGenerator[Any, None]:
         """设置态度"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -293,7 +320,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_relationship(self, event: AstrMessageEvent, user_input: str, relationship: str) -> AsyncGenerator[Any, None]:
         """设置关系"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -323,7 +350,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_global_privacy_level(self, event: AstrMessageEvent, level: str) -> AsyncGenerator[Any, None]:
         """设置全局隐私级别"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -356,7 +383,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def reset_favor(self, event: AstrMessageEvent, user_input: str) -> AsyncGenerator[Any, None]:
         """重置用户好感度状态"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -379,7 +406,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def view_favor(self, event: AstrMessageEvent, user_input: str) -> AsyncGenerator[Any, None]:
         """管理员查看指定用户的好感状态"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -447,7 +474,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def reset_plugin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """重置插件所有数据"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -462,7 +489,7 @@ class AdminCommandHandler(BaseCommandHandler):
     async def backup_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """备份插件数据"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -484,7 +511,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def show_cache_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """显示缓存统计信息 - 增强版本"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
         try:
@@ -545,7 +572,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def debug_event(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """调试事件结构"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -582,7 +609,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def debug_memory(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """调试记忆系统"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -620,7 +647,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def fix_interaction_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """修复互动统计数据"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -649,7 +676,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def cleanup_initial_users(self, event: AstrMessageEvent):
         """手动清理初始状态用户缓存"""
         if not self._is_admin(event):
-            yield event.plain_result("【错误】需要管理员权限")
+            yield event.plain_result(self._admin_denied_message(event))
             event.stop_event()
             return
     

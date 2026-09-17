@@ -17,12 +17,16 @@ class ConfigValidator:
         "type": "object",
         "properties": {
             "session_based": {"type": "boolean"},
-            "favour_min": {"type": "integer", "minimum": -1000, "maximum": 0},
-            "favour_max": {"type": "integer", "minimum": 0, "maximum": 1000},
-            "intimacy_min": {"type": "integer", "minimum": 0, "maximum": 100},
-            "intimacy_max": {"type": "integer", "minimum": 0, "maximum": 1000},
-            "change_min": {"type": "integer", "minimum": -100, "maximum": 0},
-            "change_max": {"type": "integer", "minimum": 0, "maximum": 100},
+            # 数值区间只做量级约束（与 config.py 的 PluginConfig 保持一致）。
+            # 不要写成"下限必须 ≤0 / 上限必须 ≥0"——那会把用户合理填出的
+            # intimacy_min=-100、change_min=3 判为非法，进而整份配置被丢弃。
+            # min < max 的关系由下方 extra 校验单独负责。
+            "favour_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "favour_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "intimacy_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "intimacy_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "change_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "change_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
             "admin_qq_list": {
                 "type": "array",
                 "items": {"type": "string", "pattern": "^[0-9]{5,12}$"}
