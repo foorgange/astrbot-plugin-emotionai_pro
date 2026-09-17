@@ -149,6 +149,29 @@ class TestBoundsSafety(unittest.TestCase):
         """上限小于下限 —— 曾因只判 number>lower_bound 而放行了 -5"""
         self._assert_kept(favour_max=-5)
 
+    def test_max_negative_keeps_bounds(self):
+        """上限为负：-100 < -5 虽成立，但会让整个区间变负数，必须拒绝
+
+        这是"整对采用"策略的最后一道护栏。缺了它，好感度区间会变成
+        [-100, -5]，所有用户被判为负好感/敌对期。
+        """
+        EmotionConstants.configure(**self.BASE)
+        EmotionConstants.configure(favour_max=-5)
+        self.assertEqual(EmotionConstants.MAX_FAVOR, 200,
+                         "上限为负时未拒绝，整个区间会变成负数")
+
+    def test_max_zero_keeps_bounds(self):
+        """上限为 0 同样拒绝（那会把所有好感度钳到 ≤0）"""
+        EmotionConstants.configure(**self.BASE)
+        EmotionConstants.configure(favour_max=0)
+        self.assertEqual(EmotionConstants.MAX_FAVOR, 200)
+
+    def test_intimacy_max_negative_keeps_bounds(self):
+        """亲密度上限为负同样拒绝"""
+        EmotionConstants.configure(**self.BASE)
+        EmotionConstants.configure(intimacy_max=-1)
+        self.assertEqual(EmotionConstants.MAX_INTIMACY, 200)
+
     def test_max_equal_min_keeps_bounds(self):
         self._assert_kept(favour_max=-100)
 

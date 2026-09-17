@@ -58,15 +58,17 @@ class EmotionConstants:
     ) -> None:
         """用插件配置覆盖数值边界（插件启动/配置热重载时调用）
 
-        策略：**整对一起用，或整对一起弃**。
+        策略：**整对一起用，或整对一起弃**，且上限必须为正。
         下限和上限互为约束（必须 min < max），单独判其中一个都可能出现
         「下限合法、上限非法」这种半生效状态。所以先各自做基础合法性检查
-        （是数字、在量级内），只有两个都合法且 min < max 时才整体采用；
-        否则这一对全部保持原值。
+        （是数字、在量级内），只有两个都合法、min < max、**且上限 > 0**
+        时才整体采用；否则这一对全部保持原值。
 
-        ⚠️ 为什么不逐个判：曾写成「上限只要求 > 下限」，
-        当上限=-5、下限=-100 时 `-5 > -100` 成立，-5 就被当成合法上限，
-        于是所有好感度被钳到 -5。整对采用可以杜绝这类半生效。
+        ⚠️ 为什么上限还要求 > 0：
+        只判 min < max 是不够的。若上限填成 -5、下限是 -100，
+        `-100 < -5` 成立，-5 会被当成合法上限 —— 于是好感度区间变成
+        [-100, -5]，所有用户一路被判为"负好感/敌对期"，显然不是用户意图。
+        数值型上限为正是这一类配置的固有语义，作为最后一道护栏。
         """
         def _clean(value, fallback: int):
             """基础合法性检查：返回 (是否可用, 数值)"""
@@ -82,12 +84,12 @@ class EmotionConstants:
 
         f_min_ok, f_min = _clean(favour_min, cls.MIN_FAVOR)
         f_max_ok, f_max = _clean(favour_max, cls.MAX_FAVOR)
-        if f_min_ok and f_max_ok and f_min < f_max:
+        if f_min_ok and f_max_ok and f_min < f_max and f_max > 0:
             cls.MIN_FAVOR, cls.MAX_FAVOR = f_min, f_max
 
         i_min_ok, i_min = _clean(intimacy_min, cls.MIN_INTIMACY)
         i_max_ok, i_max = _clean(intimacy_max, cls.MAX_INTIMACY)
-        if i_min_ok and i_max_ok and i_min < i_max:
+        if i_min_ok and i_max_ok and i_min < i_max and i_max > 0:
             cls.MIN_INTIMACY, cls.MAX_INTIMACY = i_min, i_max
 
     @classmethod
