@@ -93,6 +93,7 @@ def _install():
         command = staticmethod(_identity_decorator)
         on_llm_request = staticmethod(_identity_decorator)
         on_llm_response = staticmethod(_identity_decorator)
+        on_agent_done = staticmethod(_identity_decorator)
         on_decorating_result = staticmethod(_identity_decorator)
         command_group = staticmethod(_identity_decorator)
 
@@ -108,6 +109,7 @@ def _install():
             self.message_obj = None
             self.persona_id = None
             self.stop_called = False
+            self._extras = {}
 
         def get_sender_id(self):
             return self._sender_id
@@ -117,6 +119,12 @@ def _install():
 
         def get_platform_name(self):
             return "qq"
+
+        def get_extra(self, key, default=None):
+            return self._extras.get(key, default)
+
+        def set_extra(self, key, value):
+            self._extras[key] = value
 
         def plain_result(self, text):
             return text
@@ -159,6 +167,8 @@ def _install():
         def __init__(self):
             self.extra_user_content_parts = []
             self.system_prompt = ""
+            self.contexts = []
+            self.prompt = ""
             self.conversation = types.SimpleNamespace(persona_id=None)
             self.llm_response = None
 
@@ -173,8 +183,43 @@ def _install():
         def __init__(self, text=""):
             self.text = text
 
+    # 忠实复刻框架侧的最小行为：checkpoint 段（role=_checkpoint）不产生
+    # 独立消息，而是绑定到前一条消息的 _checkpoint_after 上；
+    # _no_save 标记随消息保留。供上下文保鲜的还原逻辑测试使用。
+    class Message:
+        def __init__(self, role="user", content=""):
+            self.role = role
+            self.content = content
+            self._no_save = False
+            self._checkpoint_after = None
+
+        @classmethod
+        def model_validate(cls, data):
+            msg = cls(role=data.get("role", "user"), content=data.get("content", ""))
+            msg._no_save = bool(data.get("_no_save"))
+            return msg
+
+    def is_checkpoint_message(message):
+        if isinstance(message, Message):
+            return message.role == "_checkpoint"
+        return isinstance(message, dict) and message.get("role") == "_checkpoint"
+
+    def bind_checkpoint_messages(history):
+        messages = []
+        for item in history:
+            if is_checkpoint_message(item):
+                if messages:
+                    messages[-1]._checkpoint_after = item.get("content")
+                continue
+            msg = Message.model_validate(item)
+            messages.append(msg)
+        return messages
+
     agent_mod.message = types.ModuleType("astrbot.core.agent.message")
     agent_mod.message.TextPart = TextPart
+    agent_mod.message.Message = Message
+    agent_mod.message.is_checkpoint_message = is_checkpoint_message
+    agent_mod.message.bind_checkpoint_messages = bind_checkpoint_messages
 
     # ---- 组装 ----
     star_mod.message = agent_mod.message

@@ -73,6 +73,15 @@ class PluginConfig(BaseModel):
     intimacy_first_deep_bonus: int = Field(default=3, ge=0, le=100, description="首次深度交流的亲密度奖励")
     intimacy_streak_days: int = Field(default=3, ge=2, le=30, description="连续互动多少天开始获得亲密度加成")
     intimacy_streak_bonus: int = Field(default=1, ge=0, le=100, description="连续互动达标后每日首次互动的亲密度加成")
+    # 会话边界上下文保鲜（v4.1.0）
+    #
+    # 框架默认每轮携带最近 50 条对话历史（max_context_length）。间隔较长的
+    # 两次聊天之间，旧话题会一直留在上下文里，导致 bot「忽然接上很久之前
+    # 的话题」。这里按会话间隔裁剪：距上次活跃超过该分钟数时，本轮请求
+    # 丢弃 provider 可见的历史消息（对话记录仍由框架完整保留在数据库中，
+    # 只是本轮不注入），bot 只基于当前会话 + 情感状态回应。
+    # 填 0 关闭保鲜，恢复框架默认行为。
+    session_gap_minutes: int = Field(default=60, ge=0, le=1440, description="会话间隔超过多少分钟则丢弃旧对话历史(0=关闭)")
     # 关系阶段显示名自定义（v4.0.21）
     #
     # 键是**出厂默认阶段名**（初识期/深化期/承诺期/共生期/冷淡期/反感期/敌对期，

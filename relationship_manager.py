@@ -286,7 +286,6 @@ class DynamicWeightManager:
             transition_info["is_transitioning"] = True
             
             # 应用复合评分保护：不低于前一阶段的最高评分
-            stage_config = cls.STAGE_CONFIGS[previous_stage]
             protected_score = max(current_composite, previous_composite)
             transition_info["protected_composite"] = protected_score
             

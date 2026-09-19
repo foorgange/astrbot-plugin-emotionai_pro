@@ -44,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.23")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.0")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -205,6 +205,7 @@ class EmotionAIProPlugin(Star):
             "intimacy_first_deep_bonus": "intimacy_first_deep_bonus",
             "intimacy_streak_days": "intimacy_streak_days",
             "intimacy_streak_bonus": "intimacy_streak_bonus",
+            "session_gap_minutes": "session_gap_minutes",
             "stage_names": "stage_names",
             "admin_qq_list": "admin_qq_list",
             "plugin_priority": "plugin_priority",
@@ -627,11 +628,11 @@ class EmotionAIProPlugin(Star):
                 gate = stage_info.get('intimacy_gate')
                 if gate and not gate['met']:
                     base_info += (
-                        f"\n过渡期: 亲密度 {gate['current']}/{gate['required']}"
+                        f"\n过渡期：亲密度 {gate['current']}/{gate['required']}"
                         f"（还差 {gate['gap']} 点；未达标期间好感度不变化）"
                     )
                 elif stage_info['intimacy_boost_active']:
-                    base_info += f"\n过渡期: 需要提升亲密度 {stage_info['needed_intimacy_boost']}点"
+                    base_info += f"\n过渡期：需要提升亲密度 {stage_info['needed_intimacy_boost']}点"
                 else:
                     base_info += f"\n过渡完成"
 
@@ -657,13 +658,13 @@ class EmotionAIProPlugin(Star):
                 if gate and not gate['met']:
                     detailed_info += (
                         f"   阶段过渡中（亲密度未达标 {stage_info['transition_progress']:.1f}%）\n"
-                        f"   亲密度: {gate['current']}/{gate['required']}（还差 {gate['gap']} 点）\n"
+                        f"   亲密度：{gate['current']}/{gate['required']}（还差 {gate['gap']} 点）\n"
                         f"   未达标期间好感度不会变化\n"
                     )
                 elif stage_info['intimacy_boost_active']:
                     detailed_info += (
-                        f"   阶段过渡中 ({stage_info['transition_progress']:.1f}%)\n"
-                        f"   需要亲密度提升: +{stage_info['needed_intimacy_boost']}点\n"
+                        f"   阶段过渡中（{stage_info['transition_progress']:.1f}%）\n"
+                        f"   需要亲密度提升：+{stage_info['needed_intimacy_boost']}点\n"
                     )
                 else:
                     detailed_info += f"   过渡完成\n"
@@ -747,6 +748,10 @@ class EmotionAIProPlugin(Star):
         if state is None:
             state = await self.user_manager.get_user_state(user_key)
             await self.cache.set(f"state_{user_key}", state)
+
+        # v4.1.0：会话边界上下文保鲜（跨会话不继承旧话题，
+        # 详见 _apply_context_freshness 注释）
+        self._apply_context_freshness(event, req, state)
 
         # 构建融合的情感上下文
         emotional_context = self._build_enhanced_context(state)
@@ -834,6 +839,153 @@ class EmotionAIProPlugin(Star):
             event.send_streaming = _patched_send_streaming
         except Exception as e:
             logger.warning(f"[EmotionAI] 无法挂载流式净化，将回退到默认行为: {e}")
+
+    @staticmethod
+    def _coerce_timestamp(value) -> float:
+        """把框架/插件里的时间戳统一成 Unix 秒，无法解析时返回 0。
+
+        框架 Conversation.updated_at 在不同版本可能是 int 或字符串，
+        插件存档里的 last_interaction_time 是 float。
+        """
+        if value is None or isinstance(value, bool):
+            return 0.0
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            return ts if ts > 1e9 else 0.0
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return 0.0
+            try:
+                ts = float(text)
+                return ts if ts > 1e9 else 0.0
+            except ValueError:
+                pass
+            try:
+                from datetime import datetime
+                return datetime.fromisoformat(text).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    # 上下文保鲜快照在 event extras 里的键（一次性，还原后即清）
+    _FRESHNESS_SNAPSHOT_KEY = "_emotionai_full_contexts"
+
+    def _apply_context_freshness(self, event: AstrMessageEvent,
+                                 req: ProviderRequest,
+                                 state: EnhancedEmotionalState) -> None:
+        """v4.1.0 会话边界上下文保鲜。
+
+        框架默认每轮携带整个对话历史（受 max_context_length 限制）。间隔
+        较长的两次聊天之间，旧话题会一直留在上下文里，bot 就会「忽然接上
+        很久之前的话题」。这里按会话间隔裁剪 provider 可见的历史消息：
+        距上次活跃超过 session_gap_minutes 时把 req.contexts 清空。
+
+        ⚠️ 数据库安全：框架的 run_context.messages 既是 LLM 请求的来源，
+        也是落盘历史的来源（_save_to_history 全量替换）。直接清空会把
+        整段会话历史冲掉，因此这里采用「裁剪 + 还原」：
+
+        1. 请求前：把原始上下文快照进 event extras，再清空 req.contexts，
+           本轮 LLM 看不到旧话题；
+        2. 完成后：on_agent_done 钩子把快照还原回 run_context.messages
+           （插在本回合新消息之前），落盘的历史完好无损。
+
+        其它说明：
+        - 只影响**本轮注入**，对话记录仍由框架完整保存在数据库中；
+        - 时间信号取「框架会话 updated_at」与「插件存档
+          last_interaction_time」中较新者，两者都缺失时不裁剪；
+        - session_gap_minutes <= 0 时关闭保鲜，恢复框架默认行为；
+        - 快照只取一次：同一事件重复触发请求时不会二次覆盖。
+        """
+        try:
+            gap_minutes = getattr(self.config, "session_gap_minutes", 60)
+            if isinstance(gap_minutes, bool) or not isinstance(gap_minutes, (int, float)):
+                return
+            if gap_minutes <= 0:
+                return
+
+            # 已有快照说明本事件已裁剪过，不重复处理
+            if event.get_extra(self._FRESHNESS_SNAPSHOT_KEY) is not None:
+                return
+
+            candidates = []
+            conversation = getattr(req, "conversation", None)
+            if conversation is not None:
+                candidates.append(
+                    self._coerce_timestamp(getattr(conversation, "updated_at", None))
+                )
+            stats = getattr(state, "stats", None)
+            if stats is not None:
+                candidates.append(
+                    self._coerce_timestamp(getattr(stats, "last_interaction_time", None))
+                )
+            candidates = [c for c in candidates if c > 0]
+            if not candidates:
+                return
+
+            gap_seconds = time.time() - max(candidates)
+            if gap_seconds <= 0 or gap_seconds <= gap_minutes * 60:
+                return
+
+            stale_count = len(req.contexts or [])
+            if stale_count > 0:
+                # 快照原始上下文（list 浅拷贝即可：内部 dict 不会被改写，
+                # 还原时经 bind_checkpoint_messages 生成全新的 Message 对象）
+                event.set_extra(self._FRESHNESS_SNAPSHOT_KEY, list(req.contexts))
+                req.contexts = []
+                logger.info(
+                    f"上下文保鲜: 会话间隔约 {gap_seconds / 60:.0f} 分钟，"
+                    f"超过 {gap_minutes} 分钟，本轮丢弃 {stale_count} 条旧对话历史"
+                    f"（用户 {state.user_key}，数据库记录不受影响）"
+                )
+        except Exception as e:
+            logger.warning(f"上下文保鲜处理失败，保持默认行为: {e}")
+
+    @filter.on_agent_done()
+    async def _restore_full_context(self, event: AstrMessageEvent,
+                                    run_context, response) -> None:
+        """v4.1.0 上下文保鲜的还原半场。
+
+        on_agent_done 在 runner 完成时触发，早于框架的 _save_to_history，
+        且能拿到 run_context——正好可以把请求前裁掉的旧历史补回
+        run_context.messages，保证落盘的会话记录完整。
+
+        插入位置：第一个非 system 消息之前。reset() 的组装顺序是
+        [system?] + 裁剪后的 contexts + 本回合新消息，因此边界就是
+        本回合的起点，插在它前面即恢复原始顺序。
+        """
+        full = event.get_extra(self._FRESHNESS_SNAPSHOT_KEY)
+        if full is None:
+            return
+        # 一次性快照，取完即清（异常也要清，避免污染同一事件的后续请求）
+        event.set_extra(self._FRESHNESS_SNAPSHOT_KEY, None)
+        try:
+            messages = getattr(run_context, "messages", None)
+            if messages is None:
+                return
+            boundary = len(messages)
+            for i, msg in enumerate(messages):
+                if getattr(msg, "role", None) != "system":
+                    boundary = i
+                    break
+            try:
+                from astrbot.core.agent.message import bind_checkpoint_messages
+                restored = bind_checkpoint_messages(full)
+            except ImportError:
+                # 老版本框架没有该工具：逐条还原，跳过 checkpoint 段
+                from astrbot.core.agent.message import Message, is_checkpoint_message
+                restored = [
+                    m for m in (
+                        Message.model_validate(item) for item in full
+                        if not is_checkpoint_message(item)
+                    )
+                ]
+            messages[boundary:boundary] = restored
+            logger.info(
+                f"上下文保鲜: 已还原 {len(restored)} 条旧对话历史到会话记录"
+            )
+        except Exception as e:
+            logger.warning(f"上下文保鲜还原失败，本轮会话记录可能不完整: {e}")
 
     def _build_enhanced_context(self, state: EnhancedEmotionalState) -> str:
         """构建改进的主LLM上下文"""
@@ -1100,7 +1252,6 @@ class EmotionAIProPlugin(Star):
 
     def _apply_expert_updates(self, state: EnhancedEmotionalState, updates: Dict[str, Any]):
         """应用专家更新 - 修复描述词覆盖逻辑"""
-        current_time = time.time()
 
         # 在应用更新前，先应用过渡期增益
         updates = self.weight_manager.apply_transition_benefits(state, updates)

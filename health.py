@@ -56,6 +56,7 @@ class HealthChecker:
             )
             
         except Exception as e:
+            logger.warning(f"系统健康检查失败，标记为 error 状态: {e}")
             return SystemHealth(
                 status="error",
                 memory_usage=0,

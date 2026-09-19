@@ -485,10 +485,7 @@ class RankingManager:
             entries = []
             for i, (user_key, avg, favor, intimacy, attitude, relationship, total_count) in enumerate(averages[:limit], 1):
                 display_name = self._format_user_display(user_key)
-                
-                # 计算趋势
-                trend = "↑" if avg > 0 else "↓" if avg < 0 else "→"
-                
+
                 entries.append(RankingEntry(
                     rank=i,
                     user_key=user_key,

@@ -5,6 +5,8 @@ import traceback
 from typing import Callable, Any
 from functools import wraps
 
+from astrbot.api import logger
+
 class CircuitBreaker:
     """断路器模式"""
     

@@ -40,6 +40,8 @@ class ConfigValidator:
             "intimacy_first_deep_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
             "intimacy_streak_days": {"type": "integer", "minimum": 2, "maximum": 30},
             "intimacy_streak_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
+            # v4.1.0：会话边界上下文保鲜（分钟，0=关闭）
+            "session_gap_minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
             # v4.0.21：关系阶段显示名自定义（嵌套 object，键为出厂默认名/英文 key）
             "stage_names": {
                 "type": "object",
@@ -140,6 +142,7 @@ class ConfigValidator:
             "intimacy_first_deep_bonus": 3,
             "intimacy_streak_days": 3,
             "intimacy_streak_bonus": 1,
+            "session_gap_minutes": 60,
             "stage_names": {},
             "admin_qq_list": [],
             "plugin_priority": 100000,

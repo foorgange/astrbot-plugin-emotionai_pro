@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.0.23
+version: v4.1.0
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -35,6 +35,12 @@ desc: >
 
   短期缓存 + 长期落盘 + 重要事件队列，跨重启保留关系轨迹；
   只有真正重要的事才会被记进长期记忆。
+
+
+  【话题保鲜】
+
+  隔了很久再开口时，bot 不会翻出几天前的旧话题接话，本轮对话从当下开始；
+  间隔多久算「很久」可以自己调，也可以关掉。
 
 
   【全局心情】

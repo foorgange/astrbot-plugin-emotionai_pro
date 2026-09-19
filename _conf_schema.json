@@ -147,6 +147,17 @@
     },
     "hint": "连续互动达标后，每天首次互动时奖励的亲密度；填 0 关闭"
   },
+  "session_gap_minutes": {
+    "description": "会话间隔超过多少分钟则丢弃旧对话历史",
+    "type": "int",
+    "default": 60,
+    "slider": {
+      "min": 0,
+      "max": 1440,
+      "step": 5
+    },
+    "hint": "距离上次活跃超过该时间后，本轮对话不再携带此前的聊天记录，避免 bot 突然接上很久之前的话题；对话记录本身仍会完整保存；填 0 关闭"
+  },
   "stage_names": {
     "description": "关系阶段名称自定义",
     "type": "object",

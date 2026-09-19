@@ -182,7 +182,21 @@ class UserCommandHandler(BaseCommandHandler):
         
         # 添加过渡状态信息
         if stage_info['is_transitioning']:
-            if stage_info['intimacy_boost_active']:
+            if stage_info.get('intimacy_gate_blocked'):
+                # v4.1.0：亲密度门槛卡住时，以前会落进下面的「正在适应新阶段」
+                # 分支，但过渡实际被门槛挡住了，那句话有误导。这里按门槛口径
+                # 显示目标阶段与还差多少点，与【阶段进阶建议】保持同一套数字。
+                gate = stage_info.get('intimacy_gate') or {}
+                target_display = gate.get('to_stage') or '下一阶段'
+                response_lines.extend([
+                    "",
+                    "【阶段过渡状态】",
+                    f"目标阶段：{target_display}",
+                    f"亲密度：{gate.get('current', 0)} / {gate.get('required', 0)}"
+                    f"（还差 {gate.get('gap', 0)} 点）",
+                    f"状态：亲密度未达标，过渡暂时卡住"
+                ])
+            elif stage_info['intimacy_boost_active']:
                 response_lines.extend([
                     "",
                     "【阶段过渡状态】",

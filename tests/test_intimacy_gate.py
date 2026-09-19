@@ -14,6 +14,8 @@
 import sys
 import os
 import time
+import types
+import asyncio
 import unittest
 from pathlib import Path
 
@@ -366,7 +368,7 @@ class TestGateDisplay(_GateTestCase):
         text = plugin._format_emotional_state(state)
 
         self.assertIn("亲密度未达标", text)
-        self.assertIn("亲密度: 0/20（还差 20 点）", text)
+        self.assertIn("亲密度：0/20（还差 20 点）", text)
         self.assertIn("未达标期间好感度不会变化", text)
 
     def test_no_gate_line_when_not_transitioning(self):
@@ -639,6 +641,75 @@ class TestConfigThreePlaceSync(unittest.TestCase):
         self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT["COMMITMENT"], 25,
                          "只传统一门槛时不应清空分档表")
         DynamicWeightManager.reset()
+
+
+class TestRelationshipStageDisplay(_GateTestCase):
+    """/关系阶段 命令：门槛卡住时不能显示「正在适应新阶段」
+
+    阻断时 intimacy_boost_active 恒为 True，旧文案因此落进适应分支，
+    但过渡实际被挡住了，那句话有误导。
+    """
+
+    def _run_stage_command(self, state) -> str:
+        from emotionai_pro.command_handlers import UserCommandHandler
+        from astrbot.api.event import AstrMessageEvent
+
+        handler = UserCommandHandler.__new__(UserCommandHandler)
+        handler.plugin = types.SimpleNamespace(
+            _get_user_key=lambda event: state.user_key
+        )
+
+        async def _get_state(key):
+            return state
+
+        handler.user_manager = types.SimpleNamespace(get_user_state=_get_state)
+        handler.weight_manager = DynamicWeightManager()
+        event = AstrMessageEvent(sender_id="123")
+
+        chunks = []
+
+        async def go():
+            async for chunk in handler.show_relationship_stage(event):
+                chunks.append(chunk)
+
+        asyncio.run(go())
+        return "\n".join(str(c) for c in chunks)
+
+    def test_blocked_shows_gate_not_adapting(self):
+        EmotionConstants.configure(
+            favour_min=-100, favour_max=200,
+            intimacy_min=-100, intimacy_max=200,
+        )
+        DynamicWeightManager.configure(
+            transition_intimacy_pct=20,
+            stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60},
+        )
+        state = _state(100, 72)
+        state._previous_stage = "DEEPENING"
+
+        text = self._run_stage_command(state)
+
+        self.assertIn("状态：亲密度未达标，过渡暂时卡住", text)
+        self.assertIn("目标阶段：承诺期", text)
+        self.assertIn("亲密度：72 / 80（还差 8 点）", text)
+        self.assertNotIn("正在适应新阶段", text,
+                         "卡住时不能显示正在适应新阶段（误导）")
+
+    def test_not_blocked_hides_gate_line(self):
+        EmotionConstants.configure(
+            favour_min=-100, favour_max=200,
+            intimacy_min=-100, intimacy_max=200,
+        )
+        DynamicWeightManager.configure(
+            transition_intimacy_pct=20,
+            stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60},
+        )
+        state = _state(100, 85)
+        state._previous_stage = "DEEPENING"
+
+        text = self._run_stage_command(state)
+
+        self.assertNotIn("亲密度未达标", text, "达标时不应出现门槛文案")
 
 
 if __name__ == "__main__":
