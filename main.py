@@ -44,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.22")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.23")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -69,13 +69,14 @@ class EmotionAIProPlugin(Star):
             intimacy_max=self.config.intimacy_max,
         )
 
-        # 注入「阶段过渡亲密度门槛」（v4.0.22）
+        # 注入「阶段过渡亲密度门槛」（v4.0.22，v4.0.23 起分阶段）
         #
         # 与数值边界同一时机、同一理由：DynamicWeightManager 是纯
         # classmethod 工具类，拿不到插件实例，门槛百分比只能由配置注入
         # （另一处注入点在 config_manager._apply_numeric_bounds）。
         DynamicWeightManager.configure(
             transition_intimacy_pct=self.config.transition_intimacy_pct,
+            stage_intimacy_pcts=self.config.stage_intimacy_gates,
         )
 
         # 应用「关系阶段名称自定义」（v4.0.21）
@@ -200,6 +201,7 @@ class EmotionAIProPlugin(Star):
             "intimacy_change_min": "intimacy_change_min",
             "intimacy_change_max": "intimacy_change_max",
             "transition_intimacy_pct": "transition_intimacy_pct",
+            "stage_intimacy_gates": "stage_intimacy_gates",
             "intimacy_first_deep_bonus": "intimacy_first_deep_bonus",
             "intimacy_streak_days": "intimacy_streak_days",
             "intimacy_streak_bonus": "intimacy_streak_bonus",

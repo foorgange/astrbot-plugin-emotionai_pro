@@ -87,33 +87,91 @@ class DynamicWeightManager:
     #   main.py::__init__ 与 config_manager.py::_apply_numeric_bounds
     TRANSITION_INTIMACY_PCT = 50
 
+    # 分阶段门槛（v4.0.23）：key 是**目标阶段**的英文 key，值是占最大亲密度的百分比。
+    #
+    # 为什么不能只有一个统一值：承诺期权重 favor 0.3 / intimacy 0.7，复合分
+    # 冲到 80 本身就要求亲密度很高（favor 100 时需 ≥72），统一门槛 40 在
+    # 第二、三次过渡永远拦不到东西 —— 只有第一次有牙齿。
+    # 查表顺序：STAGE_INTIMACY_PCT[目标阶段] → 未列出的阶段回退到
+    # TRANSITION_INTIMACY_PCT（含 INITIAL，它不作为升级目标出现）。
+    STAGE_INTIMACY_PCT = {
+        "DEEPENING": 20,
+        "COMMITMENT": 40,
+        "SYMBIOSIS": 60,
+    }
+
     @classmethod
-    def configure(cls, transition_intimacy_pct: int = None) -> None:
-        """用插件配置注入「过渡亲密度门槛百分比」（0-100，其余值忽略）"""
+    def configure(cls, transition_intimacy_pct: int = None,
+                  stage_intimacy_pcts: dict = None) -> None:
+        """用插件配置注入亲密度门槛百分比（0-100，其余值忽略）
+
+        transition_intimacy_pct：统一门槛（未按阶段配置时的回退值）
+        stage_intimacy_pcts：{目标阶段key: 百分比}，**整体替换**语义
+            （配置里删掉某个 key = 该阶段回退到统一门槛，热重载立即生效）
+        """
         if transition_intimacy_pct is None or isinstance(transition_intimacy_pct, bool):
+            pass
+        else:
+            try:
+                pct = int(transition_intimacy_pct)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if 0 <= pct <= 100:
+                    cls.TRANSITION_INTIMACY_PCT = pct
+
+        if stage_intimacy_pcts is None or isinstance(stage_intimacy_pcts, bool):
             return
-        try:
-            pct = int(transition_intimacy_pct)
-        except (TypeError, ValueError):
+        if not isinstance(stage_intimacy_pcts, dict):
             return
-        if 0 <= pct <= 100:
-            cls.TRANSITION_INTIMACY_PCT = pct
+        sanitized = {}
+        for stage_key, value in stage_intimacy_pcts.items():
+            if stage_key not in cls.STAGE_CONFIGS or stage_key == "INITIAL":
+                continue
+            if isinstance(value, bool):
+                continue
+            try:
+                pct = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= pct <= 100:
+                sanitized[stage_key] = pct
+        cls.STAGE_INTIMACY_PCT = sanitized
 
     @classmethod
     def reset(cls) -> None:
         """恢复出厂门槛（测试用）"""
         cls.TRANSITION_INTIMACY_PCT = 50
+        cls.STAGE_INTIMACY_PCT = {
+            "DEEPENING": 20,
+            "COMMITMENT": 40,
+            "SYMBIOSIS": 60,
+        }
 
     @classmethod
-    def get_intimacy_gate(cls, state: EnhancedEmotionalState) -> Dict[str, Any]:
-        """计算阶段过渡的亲密度门槛（v4.0.22）
+    def get_stage_intimacy_pct(cls, target_stage: str = None) -> int:
+        """取某个升级目标阶段适用的亲密度门槛百分比
+
+        未按阶段配置（或该阶段不在表里）时回退到统一门槛
+        TRANSITION_INTIMACY_PCT —— 老配置只改过统一值也不会失效。
+        """
+        if target_stage and target_stage in cls.STAGE_INTIMACY_PCT:
+            return cls.STAGE_INTIMACY_PCT[target_stage]
+        return cls.TRANSITION_INTIMACY_PCT
+
+    @classmethod
+    def get_intimacy_gate(cls, state: EnhancedEmotionalState,
+                          target_stage: str = None) -> Dict[str, Any]:
+        """计算阶段过渡的亲密度门槛（v4.0.22，v4.0.23 起按目标阶段分档）
 
         门槛 = 亲密度上限（EmotionConstants.MAX_INTIMACY，跟随用户配置）
-        × TRANSITION_INTIMACY_PCT%。返回 required / current / gap / met，
-        目标阶段显示名由调用方补 to_stage。
+        × 目标阶段对应的百分比。target_stage 为 None 时用统一门槛
+        TRANSITION_INTIMACY_PCT（保持旧调用方行为）。返回 required /
+        current / gap / met，目标阶段显示名由调用方补 to_stage。
         """
+        pct = cls.get_stage_intimacy_pct(target_stage)
         max_intimacy = EmotionConstants.MAX_INTIMACY
-        required = int(max_intimacy * cls.TRANSITION_INTIMACY_PCT / 100)
+        required = int(max_intimacy * pct / 100)
         current = state.intimacy
         gap = max(0, required - current)
         return {
@@ -121,7 +179,8 @@ class DynamicWeightManager:
             "current": current,
             "gap": gap,
             "met": gap <= 0,
-            "threshold_pct": cls.TRANSITION_INTIMACY_PCT,
+            "threshold_pct": pct,
+            "target_stage": target_stage,
         }
 
     @classmethod
@@ -152,7 +211,9 @@ class DynamicWeightManager:
         gate_blocked = False
         gate_target = None
         if STAGE_ORDER.index(target_stage) > STAGE_ORDER.index(previous_stage):
-            if not cls.get_intimacy_gate(state)["met"]:
+            # v4.0.23：按**目标阶段**取门槛（深化期 20% / 承诺期 40% / 共生期 60%），
+            # 未分档配置的阶段回退到统一门槛
+            if not cls.get_intimacy_gate(state, target_stage)["met"]:
                 gate_blocked = True
                 gate_target = target_stage
                 target_stage = previous_stage
@@ -246,7 +307,8 @@ class DynamicWeightManager:
             if gate_blocked:
                 # 门槛阻断：把「还差多少亲密度」并入过渡信息，
                 # 供面板 / 建议文案 / 命令展示使用
-                gate = dict(cls.get_intimacy_gate(state))
+                # v4.0.23：required 必须按**被挡住的目标阶段**那档算
+                gate = dict(cls.get_intimacy_gate(state, gate_target))
                 gate["to_stage"] = get_stage_name(gate_target) if gate_target else None
                 # 被挡住阶段的英文 key：apply_transition_benefits 取增益系数时
                 # 必须用它，不能用在压回当前阶段的 target_stage

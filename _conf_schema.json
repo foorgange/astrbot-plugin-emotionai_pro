@@ -74,6 +74,46 @@
     },
     "hint": "复合评分满足升级条件时，亲密度还必须达到该百分比才能完成过渡；未达标期间好感度不变化。填 0 关闭门槛"
   },
+  "stage_intimacy_gates": {
+    "description": "分阶段过渡亲密度门槛",
+    "type": "object",
+    "items": {
+      "DEEPENING": {
+        "description": "进入深化期所需亲密度占最大亲密度的百分比",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "第一阶段升第二阶段的门槛；填 0 表示这一段不设门槛"
+      },
+      "COMMITMENT": {
+        "description": "进入承诺期所需亲密度占最大亲密度的百分比",
+        "type": "int",
+        "default": 40,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "第二阶段升第三阶段的门槛，应高于深化期，否则形同虚设"
+      },
+      "SYMBIOSIS": {
+        "description": "进入共生期所需亲密度占最大亲密度的百分比",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "第三阶段升最高阶段的门槛；填 0 关闭该段门槛"
+      }
+    },
+    "hint": "按目标阶段分别设置：复合评分达标后，亲密度还必须达到「最大亲密度 × 对应百分比」才能完成过渡。某个阶段删掉不填时，该段回退用上方统一门槛"
+  },
   "intimacy_first_deep_bonus": {
     "description": "首次深度交流的亲密度奖励",
     "type": "int",

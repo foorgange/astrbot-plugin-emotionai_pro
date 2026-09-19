@@ -32,6 +32,11 @@ class ConfigValidator:
             "intimacy_change_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
             # v4.0.22：阶段过渡亲密度门槛 + 亲密度里程碑
             "transition_intimacy_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+            # v4.0.23：分阶段亲密度门槛（key=目标阶段英文 key，值=百分比）
+            "stage_intimacy_gates": {
+                "type": "object",
+                "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 100}
+            },
             "intimacy_first_deep_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
             "intimacy_streak_days": {"type": "integer", "minimum": 2, "maximum": 30},
             "intimacy_streak_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
@@ -131,6 +136,7 @@ class ConfigValidator:
             "intimacy_change_min": -3,
             "intimacy_change_max": 3,
             "transition_intimacy_pct": 50,
+            "stage_intimacy_gates": {"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60},
             "intimacy_first_deep_bonus": 3,
             "intimacy_streak_days": 3,
             "intimacy_streak_bonus": 1,

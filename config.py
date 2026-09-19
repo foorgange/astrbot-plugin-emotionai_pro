@@ -59,6 +59,17 @@ class PluginConfig(BaseModel):
     # ② 首次深度交流 / 连续多日互动两类里程碑额外加成亲密度，让它不必
     #    只靠 LLM 每轮打分缓慢积累。填 0 即关闭对应加成。
     transition_intimacy_pct: int = Field(default=50, ge=0, le=100, description="阶段过渡所需亲密度占最大亲密度的百分比(0=关闭门槛)")
+    # 分阶段亲密度门槛（v4.0.23）
+    #
+    # key 是**目标阶段英文 key**（DEEPENING/COMMITMENT/SYMBIOSIS），值是
+    # 占最大亲密度的百分比。只有一个统一值时，第二、三次过渡的门槛形同虚设
+    # （承诺期权重 favor 0.3/intimacy 0.7，复合分上 80 本身就要求亲密度
+    # 很高），所以按目标阶段分别设，且仍跟随「最大亲密度」换算。
+    # 查表顺序：本表 → 未列出的阶段回退 transition_intimacy_pct。
+    stage_intimacy_gates: Dict[str, int] = Field(
+        default_factory=lambda: {"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60},
+        description="分阶段过渡亲密度门槛(占最大亲密度的百分比，按目标阶段分别设置)",
+    )
     intimacy_first_deep_bonus: int = Field(default=3, ge=0, le=100, description="首次深度交流的亲密度奖励")
     intimacy_streak_days: int = Field(default=3, ge=2, le=30, description="连续互动多少天开始获得亲密度加成")
     intimacy_streak_bonus: int = Field(default=1, ge=0, le=100, description="连续互动达标后每日首次互动的亲密度加成")

@@ -179,9 +179,11 @@ class ConfigManager:
         # v4.0.22：同步「阶段过渡亲密度门槛」。与数值边界同一理由 ——
         # 门槛百分比是 DynamicWeightManager 的进程级类属性，热重载时不
         # 刷新就会出现「配置改了、门槛还是旧值」。
+        # v4.0.23：同时同步分阶段门槛表（整体替换语义）。
         try:
             DynamicWeightManager.configure(
                 transition_intimacy_pct=config.transition_intimacy_pct,
+                stage_intimacy_pcts=config.stage_intimacy_gates,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"同步过渡亲密度门槛失败，保持原门槛: {e}")

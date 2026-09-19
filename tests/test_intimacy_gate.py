@@ -68,11 +68,14 @@ class _GateTestCase(unittest.TestCase):
 
 
 class TestIntimacyGateBlocksTransition(_GateTestCase):
-    """门槛：分数够升级、亲密度没达标 → 过渡卡住且持续"""
+    """门槛：分数够升级、亲密度没达标 → 过渡卡住且持续
+
+    v4.0.23 起门槛按目标阶段分档，深化期默认 20%（= 出厂默认上限 100 × 20%）。
+    """
 
     def test_blocked_when_intimacy_below_threshold(self):
-        # favor 70 / intimacy 40：复合评分 55 刚好够升深化期，但门槛要 50
-        state = _state(70, 40)
+        # favor 79 / intimacy 0：复合评分 55.3 刚好够升深化期，但深化期门槛要 20
+        state = _state(79, 0)
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertTrue(info["is_transitioning"], "亲密度未达标却放行了过渡")
@@ -80,21 +83,21 @@ class TestIntimacyGateBlocksTransition(_GateTestCase):
 
         gate = info["intimacy_gate"]
         self.assertIsNotNone(gate)
-        self.assertEqual(gate["required"], 50)
-        self.assertEqual(gate["current"], 40)
-        self.assertEqual(gate["gap"], 10)
+        self.assertEqual(gate["required"], 20)
+        self.assertEqual(gate["current"], 0)
+        self.assertEqual(gate["gap"], 20)
         self.assertFalse(gate["met"])
         self.assertEqual(gate["to_stage"], "深化期")
 
     def test_block_persists_until_gate_met(self):
         """阻断期间 _previous_stage 不推进，重复查询仍是过渡中"""
-        state = _state(70, 40)
+        state = _state(79, 0)
         DynamicWeightManager.get_stage_info(state)
         self.assertIsNone(state._previous_stage, "阻断时不应落盘新基线")
 
         info2 = DynamicWeightManager.get_stage_info(state)
         self.assertTrue(info2["is_transitioning"], "第二次查询阻断状态丢了")
-        self.assertEqual(info2["intimacy_gate"]["gap"], 10)
+        self.assertEqual(info2["intimacy_gate"]["gap"], 20)
 
     def test_gate_met_completes_transition(self):
         """亲密度达标 → 正常一次性过渡，之后稳定"""
@@ -111,11 +114,11 @@ class TestIntimacyGateBlocksTransition(_GateTestCase):
 
     def test_gate_met_after_intimacy_grows(self):
         """被门槛卡住后，亲密度涨到达标线即放行（冻结结束）"""
-        state = _state(70, 40)
+        state = _state(79, 0)
         DynamicWeightManager.get_stage_info(state)
         self.assertTrue(state._previous_stage is None)
 
-        state.intimacy = 52  # 模拟里程碑/常规变化把亲密度推过门槛
+        state.intimacy = 35  # 模拟里程碑/常规变化把亲密度推过门槛
         info = DynamicWeightManager.get_stage_info(state)
         self.assertEqual(info["stage"], "DEEPENING")
         self.assertTrue(info["is_transitioning"])
@@ -127,7 +130,7 @@ class TestIntimacyGateBlocksTransition(_GateTestCase):
         apply_transition_benefits 也用它取 intimacy_boost_factor，
         「显示的还差多少」与「实际生效的倍数」就是两套配置。
         """
-        state = _state(70, 40)
+        state = _state(79, 0)
         plugin = _make_plugin()
         out = plugin.weight_manager.apply_transition_benefits(
             state, {"intimacy": 2})
@@ -137,8 +140,9 @@ class TestIntimacyGateBlocksTransition(_GateTestCase):
                          "增益系数应按被挡住的深化期配置算")
 
     def test_zero_pct_disables_gate(self):
-        """关闭分支：阈值 0 → 永不门槛（旧行为）"""
-        DynamicWeightManager.configure(transition_intimacy_pct=0)
+        """关闭分支：统一阈值 0 且分档表清空 → 永不门槛（旧行为）"""
+        DynamicWeightManager.configure(transition_intimacy_pct=0,
+                                       stage_intimacy_pcts={})
         # favor 79 / intimacy 0：复合评分 55.3 单靠好感度即可升级
         state = _state(79, 0)
         info = DynamicWeightManager.get_stage_info(state)
@@ -182,8 +186,8 @@ class TestFavorFreeze(_GateTestCase):
     """未达标期间好感度冻结（亲密度照常变化）"""
 
     def test_is_favor_frozen_states(self):
-        self.assertTrue(DynamicWeightManager.is_favor_frozen(_state(70, 40)))
-        self.assertFalse(DynamicWeightManager.is_favor_frozen(_state(70, 55)))
+        self.assertTrue(DynamicWeightManager.is_favor_frozen(_state(79, 0)))
+        self.assertFalse(DynamicWeightManager.is_favor_frozen(_state(70, 60)))
         self.assertFalse(DynamicWeightManager.is_favor_frozen(_state(20, 0)))
 
     def test_apply_updates_freezes_favor_keeps_intimacy(self):
@@ -192,14 +196,14 @@ class TestFavorFreeze(_GateTestCase):
             intimacy_first_deep_bonus=0,
             intimacy_streak_bonus=0,
         )
-        state = _state(70, 40)  # 门槛阻断中
+        state = _state(79, 0)  # 深化期门槛（20%）阻断中
         updates = {"favor": 3, "intimacy": 1, "joy": 1, "source": "llm_analysis",
                    "llm_available": True}
 
         EmotionAIProPlugin._apply_expert_updates(plugin, state, updates)
 
-        self.assertEqual(state.favor, 70, "未达标期间好感度不应变化")
-        self.assertGreater(state.intimacy, 40, "亲密度的变化不应被冻结")
+        self.assertEqual(state.favor, 79, "未达标期间好感度不应变化")
+        self.assertGreater(state.intimacy, 0, "亲密度的变化不应被冻结")
         # 调用方 dict 不被污染（之后还要参与意义计算/全局心情）
         self.assertEqual(updates["favor"], 3)
 
@@ -349,20 +353,20 @@ class TestGateDisplay(_GateTestCase):
 
     def test_basic_shows_gap_when_blocked(self):
         plugin = _make_plugin(transition_intimacy_pct=50, global_privacy_level=1)
-        state = _state(70, 40)
+        state = _state(79, 0)
         text = plugin._format_emotional_state(state)
 
-        self.assertIn("亲密度 40/50", text)
-        self.assertIn("还差 10 点", text)
+        self.assertIn("亲密度 0/20", text)
+        self.assertIn("还差 20 点", text)
         self.assertIn("未达标期间好感度不变化", text)
 
     def test_detailed_shows_gap_when_blocked(self):
         plugin = _make_plugin(transition_intimacy_pct=50, global_privacy_level=2)
-        state = _state(70, 40)
+        state = _state(79, 0)
         text = plugin._format_emotional_state(state)
 
         self.assertIn("亲密度未达标", text)
-        self.assertIn("亲密度: 40/50（还差 10 点）", text)
+        self.assertIn("亲密度: 0/20（还差 20 点）", text)
         self.assertIn("未达标期间好感度不会变化", text)
 
     def test_no_gate_line_when_not_transitioning(self):
@@ -371,12 +375,160 @@ class TestGateDisplay(_GateTestCase):
         self.assertNotIn("未达标", text)
 
     def test_advice_mentions_gate(self):
-        state = _state(70, 40)
+        state = _state(79, 0)
         advice = DynamicWeightManager.get_stage_progression_advice(state)
         self.assertIn("亲密度还未达标", advice)
-        self.assertIn("40/50", advice)
-        self.assertIn("还差 10 点", advice)
+        self.assertIn("0/20", advice)
+        self.assertIn("还差 20 点", advice)
         self.assertIn("好感度不会变化", advice)
+
+
+class TestStageIntimacyGates(_GateTestCase):
+    """v4.0.23 分阶段门槛：每次过渡按**目标阶段**各自取百分比
+
+    动机：统一门槛只有第一次过渡有牙齿。承诺期权重 favor 0.3 /
+    intimacy 0.7，复合分上 80 本身就要求亲密度 ≥72（favor 100 时），
+    40 的统一门槛在第二、三次过渡永远拦不到东西。
+    """
+
+    def _cfg(self, **kw):
+        EmotionConstants.configure(favour_min=-100, favour_max=200,
+                                  intimacy_min=-100, intimacy_max=kw.pop("imax", 200))
+        DynamicWeightManager.configure(**kw)
+
+    def test_each_stage_uses_own_threshold(self):
+        """默认 20/40/60，随最大亲密度换算"""
+        self._cfg(transition_intimacy_pct=20,
+                  stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40,
+                                       "SYMBIOSIS": 60})
+        blank = EnhancedEmotionalState(user_key="x")
+        for stage, expected in (("DEEPENING", 40), ("COMMITMENT", 80),
+                                ("SYMBIOSIS", 120)):
+            gate = DynamicWeightManager.get_intimacy_gate(blank, stage)
+            self.assertEqual(gate["required"], expected,
+                             f"{stage} 应按自己的百分比算门槛")
+            self.assertEqual(gate["target_stage"], stage)
+
+    def test_second_transition_not_redundant(self):
+        """回归：第二次过渡不再形同虚设
+
+        favor 100 / intimacy 72：复合评分 80.4 已达承诺期阈值 80。
+        统一门槛 40 时会直接放行（72 > 40，门槛无意义）；分档后
+        承诺期要 80，必须卡住并提示还差 8 点。
+        """
+        self._cfg(transition_intimacy_pct=20,
+                  stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40,
+                                       "SYMBIOSIS": 60})
+        state = _state(100, 72)
+        state._previous_stage = "DEEPENING"
+        info = DynamicWeightManager.get_stage_info(state)
+
+        self.assertTrue(info["intimacy_gate_blocked"],
+                        "承诺期亲密度未达标却放行了过渡")
+        self.assertEqual(info["stage"], "DEEPENING", "未达标不应提前进入承诺期")
+        gate = info["intimacy_gate"]
+        self.assertEqual(gate["required"], 80)
+        self.assertEqual(gate["gap"], 8)
+        self.assertEqual(gate["to_stage"], "承诺期")
+        self.assertEqual(gate["to_stage_key"], "COMMITMENT")
+        self.assertTrue(DynamicWeightManager.is_favor_frozen(state))
+
+    def test_same_state_passes_under_unified_gate(self):
+        """对照：清空分档表、只用统一门槛 20% 时，同一状态不再被挡
+        （证明上面的阻断确实来自分档，而不是分数本身不够）"""
+        self._cfg(transition_intimacy_pct=20, stage_intimacy_pcts={})
+        state = _state(100, 72)
+        state._previous_stage = "DEEPENING"
+        info = DynamicWeightManager.get_stage_info(state)
+
+        self.assertFalse(info["intimacy_gate_blocked"],
+                         "统一门槛 40 低于 72，本应放行")
+        self.assertEqual(info["stage"], "COMMITMENT")
+
+    def test_third_transition_gate(self):
+        """第三次过渡（承诺期 → 共生期）也按自己的档位生效"""
+        self._cfg(transition_intimacy_pct=20,
+                  stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40,
+                                       "SYMBIOSIS": 60})
+        state = _state(100, 100)
+        state._previous_stage = "COMMITMENT"
+        info = DynamicWeightManager.get_stage_info(state)
+
+        self.assertTrue(info["intimacy_gate_blocked"])
+        self.assertEqual(info["stage"], "COMMITMENT")
+        self.assertEqual(info["intimacy_gate"]["required"], 120)
+        self.assertEqual(info["intimacy_gate"]["gap"], 20)
+
+    def test_unlisted_stage_falls_back_to_global(self):
+        """分档表里没有的阶段回退到统一门槛"""
+        self._cfg(transition_intimacy_pct=50, stage_intimacy_pcts={})
+        blank = EnhancedEmotionalState(user_key="x")
+        # 上限 200 × 统一 50% = 100（证明取的是统一档，不是分档默认值）
+        self.assertEqual(
+            DynamicWeightManager.get_intimacy_gate(blank, "DEEPENING")["required"], 100)
+        self.assertEqual(DynamicWeightManager.get_stage_intimacy_pct("DEEPENING"), 50)
+
+    def test_stage_zero_disables_only_that_stage(self):
+        """某一档填 0 只关闭该段，不影响其它档"""
+        self._cfg(transition_intimacy_pct=20,
+                  stage_intimacy_pcts={"DEEPENING": 0, "COMMITMENT": 40,
+                                       "SYMBIOSIS": 60})
+        # 第一段关闭：亲密 0 也能升深化期
+        first = _state(79, 0)
+        info = DynamicWeightManager.get_stage_info(first)
+        self.assertEqual(info["stage"], "DEEPENING")
+        self.assertFalse(info["intimacy_gate_blocked"])
+
+        # 第二段仍然生效
+        second = _state(100, 72)
+        second._previous_stage = "DEEPENING"
+        info2 = DynamicWeightManager.get_stage_info(second)
+        self.assertTrue(info2["intimacy_gate_blocked"])
+        self.assertEqual(info2["intimacy_gate"]["required"], 80)
+
+    def test_required_follows_max_intimacy_per_stage(self):
+        """最大亲密度改了，各档门槛按同一比例缩放"""
+        self._cfg(transition_intimacy_pct=20, imax=400,
+                  stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40,
+                                       "SYMBIOSIS": 60})
+        blank = EnhancedEmotionalState(user_key="x")
+        self.assertEqual(
+            DynamicWeightManager.get_intimacy_gate(blank, "COMMITMENT")["required"], 160)
+        self.assertEqual(
+            DynamicWeightManager.get_intimacy_gate(blank, "SYMBIOSIS")["required"], 240)
+
+    def test_configure_sanitizes_stage_table(self):
+        """非法 key / 越界值 / bool 一律丢弃，合法值保留"""
+        DynamicWeightManager.configure(
+            stage_intimacy_pcts={"DEEPENING": 15, "COMMITMENT": 150,
+                                 "SYMBIOSIS": True, "INITIAL": 30,
+                                 "NOT_A_STAGE": 40, "COMMITMENT2": 10})
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT, {"DEEPENING": 15})
+
+    def test_configure_stage_table_must_be_dict(self):
+        DynamicWeightManager.configure(stage_intimacy_pcts="20")
+        DynamicWeightManager.configure(stage_intimacy_pcts=True)
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT,
+                         {"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60})
+
+    def test_reset_restores_stage_table(self):
+        DynamicWeightManager.configure(stage_intimacy_pcts={"DEEPENING": 99})
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT, {"DEEPENING": 99})
+        DynamicWeightManager.reset()
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT,
+                         {"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60})
+        self.assertEqual(DynamicWeightManager.TRANSITION_INTIMACY_PCT, 50)
+
+    def test_hot_reload_replaces_table(self):
+        """热重载是整体替换：删掉某个 key 后该段回退统一门槛"""
+        DynamicWeightManager.configure(
+            stage_intimacy_pcts={"DEEPENING": 20, "COMMITMENT": 40})
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT["COMMITMENT"], 40)
+        DynamicWeightManager.configure(stage_intimacy_pcts={"DEEPENING": 20})
+        self.assertNotIn("COMMITMENT", DynamicWeightManager.STAGE_INTIMACY_PCT)
+        self.assertEqual(DynamicWeightManager.get_stage_intimacy_pct("COMMITMENT"),
+                         DynamicWeightManager.TRANSITION_INTIMACY_PCT)
+        DynamicWeightManager.reset()
 
 
 class TestConfigThreePlaceSync(unittest.TestCase):
@@ -402,6 +554,18 @@ class TestConfigThreePlaceSync(unittest.TestCase):
             self.assertLessEqual(slider["min"], node["default"])
             self.assertGreaterEqual(slider["max"], node["default"])
 
+        # v4.0.23：分阶段门槛是 object 节点，逐档比对默认值
+        gates_node = schema["stage_intimacy_gates"]
+        self.assertEqual(gates_node["type"], "object")
+        self.assertEqual(gates_node["items"].keys(), cfg.stage_intimacy_gates.keys())
+        for stage_key, default in cfg.stage_intimacy_gates.items():
+            item = gates_node["items"][stage_key]
+            self.assertEqual(item["default"], default,
+                             f"{stage_key} 档 schema 默认值与 PluginConfig 不一致")
+            self.assertIn("slider", item, f"{stage_key} 档缺少 slider")
+            self.assertLessEqual(item["slider"]["min"], default)
+            self.assertGreaterEqual(item["slider"]["max"], default)
+
     def test_schema_validator_knows_new_fields(self):
         from emotionai_pro.schema_validator import ConfigValidator
         props = ConfigValidator.CONFIG_SCHEMA["properties"]
@@ -409,6 +573,12 @@ class TestConfigThreePlaceSync(unittest.TestCase):
                          {"type": "integer", "minimum": 0, "maximum": 100})
         self.assertEqual(props["intimacy_streak_days"],
                          {"type": "integer", "minimum": 2, "maximum": 30})
+        # v4.0.23：分阶段门槛必须进 schema（顶层 additionalProperties=False，
+        # 漏了它 AstrBot 把该字段写进配置后整份校验会失败）
+        self.assertEqual(props["stage_intimacy_gates"],
+                         {"type": "object",
+                          "additionalProperties": {"type": "integer",
+                                                   "minimum": 0, "maximum": 100}})
         # create_default_config 会写文件，不便直接调；改为源码级断言默认值存在
         root = Path(__file__).resolve().parent.parent
         src = (root / "schema_validator.py").read_text(encoding="utf-8")
@@ -418,12 +588,16 @@ class TestConfigThreePlaceSync(unittest.TestCase):
                                ("intimacy_streak_bonus", 1)):
             self.assertIn(f'"{field}": {default},', src,
                           f"create_default_config 漏了 {field}")
+        self.assertIn(
+            '"stage_intimacy_gates": {"DEEPENING": 20, "COMMITMENT": 40, "SYMBIOSIS": 60},',
+            src, "create_default_config 漏了分阶段门槛")
 
     def test_base_mapping_whitelist(self):
         root = Path(__file__).resolve().parent.parent
         src = (root / "main.py").read_text(encoding="utf-8")
         for field in ("transition_intimacy_pct", "intimacy_first_deep_bonus",
-                      "intimacy_streak_days", "intimacy_streak_bonus"):
+                      "intimacy_streak_days", "intimacy_streak_bonus",
+                      "stage_intimacy_gates"):
             self.assertIn(f'"{field}": "{field}"', src,
                           f"base_mapping 白名单漏了 {field}")
 
@@ -434,14 +608,16 @@ class TestConfigThreePlaceSync(unittest.TestCase):
         self.assertIn(
             "DynamicWeightManager.configure(\n"
             "            transition_intimacy_pct=self.config.transition_intimacy_pct,\n"
+            "            stage_intimacy_pcts=self.config.stage_intimacy_gates,\n"
             "        )",
-            main_src, "main.py 启动时未注入门槛百分比",
+            main_src, "main.py 启动时未注入门槛（含分阶段表）",
         )
         self.assertIn(
             "DynamicWeightManager.configure(\n"
             "                transition_intimacy_pct=config.transition_intimacy_pct,\n"
+            "                stage_intimacy_pcts=config.stage_intimacy_gates,\n"
             "            )",
-            cm_src, "config_manager 热重载时未注入门槛百分比",
+            cm_src, "config_manager 热重载时未注入门槛（含分阶段表）",
         )
 
     def test_configure_rejects_out_of_range(self):
@@ -453,6 +629,15 @@ class TestConfigThreePlaceSync(unittest.TestCase):
         self.assertEqual(DynamicWeightManager.TRANSITION_INTIMACY_PCT, 50)
         DynamicWeightManager.configure(transition_intimacy_pct=70)
         self.assertEqual(DynamicWeightManager.TRANSITION_INTIMACY_PCT, 70)
+        DynamicWeightManager.reset()
+
+    def test_stage_table_untouched_when_config_omits_it(self):
+        """老配置没有 stage_intimacy_gates 字段 → 分档表保持原样"""
+        DynamicWeightManager.configure(
+            stage_intimacy_pcts={"DEEPENING": 15, "COMMITMENT": 25, "SYMBIOSIS": 35})
+        DynamicWeightManager.configure(transition_intimacy_pct=30)
+        self.assertEqual(DynamicWeightManager.STAGE_INTIMACY_PCT["COMMITMENT"], 25,
+                         "只传统一门槛时不应清空分档表")
         DynamicWeightManager.reset()
 
 
