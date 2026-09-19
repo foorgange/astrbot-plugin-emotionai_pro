@@ -35,6 +35,7 @@ async def migrate_old_data(old_data_path: Path, new_repository):
 def _convert_to_new_format(user_key: str, old_data: Dict[str, Any]):
     """将旧数据格式转换为新格式"""
     from .models import EnhancedEmotionalState, EmotionalMetrics, InteractionStats, TextDescriptions
+    from .stage_names import get_stage_name
     
     try:
         # 基础字段
@@ -77,7 +78,8 @@ def _convert_to_new_format(user_key: str, old_data: Dict[str, Any]):
             emotions=emotions,
             stats=stats,
             descriptions=descriptions,
-            relationship_stage=old_data.get('relationship_stage', '初识期'),
+            # 缺省阶段名取「当前生效的初识期名」（v4.0.21 起阶段名可自定义）
+            relationship_stage=old_data.get('relationship_stage', get_stage_name('INITIAL')),
             stage_composite_score=old_data.get('stage_composite_score', 0.0),
             stage_progress=old_data.get('stage_progress', 0.0),
             force_update_counter=old_data.get('force_update_counter', 0),

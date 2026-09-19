@@ -12,6 +12,7 @@ from astrbot.api import logger
 
 from .config import PluginConfig
 from .constants import EmotionConstants
+from .stage_names import configure_stage_names
 
 class ConfigManager:
     """配置管理器 - 增强的热重载支持"""
@@ -145,12 +146,16 @@ class ConfigManager:
             self._error_count += 1
     
     def _apply_numeric_bounds(self, config: PluginConfig) -> None:
-        """把配置里的数值边界同步到状态模型
+        """把配置里的运行时设置同步到全局状态
 
         与 main.py::__init__ 里的注入是同一件事，区别在于这里是热重载路径。
         不同步的后果：用户在配置界面把「好感度最大值」从 100 改成 200，
         配置确实更新了，但 `models._validate_core_values` 仍按旧的 100 钳制，
         表现就是"配置生效了、数值却写不上去"。
+
+        v4.0.21 起这里同时同步「关系阶段名称自定义」（stage_names）——
+        阶段显示名同样是进程级单例，热重载时不刷新就会出现
+        "配置改了但面板还显示旧阶段名"。
         """
         try:
             EmotionConstants.configure(
@@ -162,6 +167,13 @@ class ConfigManager:
         except Exception as e:  # noqa: BLE001
             # 边界同步失败不该影响配置更新本身，保持旧边界即可
             logger.warning(f"同步数值边界失败，保持原边界: {e}")
+
+        try:
+            renamed = configure_stage_names(config.stage_names)
+            if renamed:
+                logger.info(f"配置热重载：关系阶段自定义名称已生效: {', '.join(renamed)}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"同步关系阶段名称失败，保持原名称: {e}")
 
     async def _reload_config(self, new_config_data: Dict[str, Any]):
         """重新加载配置"""
@@ -276,6 +288,7 @@ class ConfigManager:
         _fix_pair("favour_min", "favour_max")
         _fix_pair("intimacy_min", "intimacy_max")
         _fix_pair("change_min", "change_max")
+        _fix_pair("intimacy_change_min", "intimacy_change_max")
 
         if config.force_update_interval <= 0:
             default = PluginConfig.model_fields["force_update_interval"].default

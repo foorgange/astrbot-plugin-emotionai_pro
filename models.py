@@ -12,6 +12,7 @@ from astrbot.api import logger
 
 from .constants import EmotionConstants, TimeConstants
 from .config import AttitudeType, RelationshipStage, PrivacyLevel
+from .stage_names import get_stage_name, normalize_stage_name
 
 @dataclass
 class EmotionalMetrics:
@@ -337,7 +338,11 @@ class EnhancedEmotionalState:
     _previous_stage: Optional[str] = None
     _previous_composite: float = 0.0
     
-    # 有效的关系阶段列表
+    # 有效的关系阶段**显示名**列表。
+    #
+    # ⚠️ v4.0.21 起阶段名支持用户自定义（见 stage_names.py），校验不再看
+    # 这个出厂默认常量，改看 `stage_names.valid_stage_names()` ——
+    # 即「当前生效名」。留在这里只为兼容可能引用它的旧代码。
     VALID_STAGES: ClassVar[List[str]] = ["初识期", "深化期", "承诺期", "共生期", "冷淡期", "反感期", "敌对期"]
 
     # 有效的阶段「内部 key」列表。
@@ -384,19 +389,35 @@ class EnhancedEmotionalState:
             self.last_force_update = current_time
     
     def _validate_relationship_stage(self):
-        """验证关系阶段"""
-        if self.relationship_stage not in self.VALID_STAGES:
+        """验证关系阶段
+
+        v4.0.21：阶段名可自定义后，校验逻辑改为两步：
+
+        ① **先归一化**：存档里可能是改名前的老名字（出厂默认名）。
+           `normalize_stage_name()` 会把它映射到该阶段的当前生效名 ——
+           于是用户改名后旧存档立即跟随新名，**不会**被判无效而重置。
+        ② 仍非法的才按 favor 修复，且修复目标用当前生效名
+           （负向三档同理），不再写死「初识期」。
+        """
+        normalized = normalize_stage_name(self.relationship_stage)
+        if normalized is None:
             # 尝试修复无效的阶段
             if self.favor < 0:
                 if self.favor >= -30:
-                    self.relationship_stage = "冷淡期"
+                    self.relationship_stage = get_stage_name("COLD")
                 elif self.favor >= -70:
-                    self.relationship_stage = "反感期"
+                    self.relationship_stage = get_stage_name("AVERSION")
                 else:
-                    self.relationship_stage = "敌对期"
+                    self.relationship_stage = get_stage_name("HOSTILITY")
             else:
-                self.relationship_stage = "初识期"
+                self.relationship_stage = get_stage_name("INITIAL")
             logger.warning(f"修复无效的关系阶段: {self.relationship_stage}")
+        elif normalized != self.relationship_stage:
+            # 旧默认名 → 当前生效名（用户改过阶段名）
+            logger.info(
+                f"关系阶段名同步为新名称: {self.relationship_stage} → {normalized}"
+            )
+            self.relationship_stage = normalized
     
     def _validate_progress_values(self):
         """验证进度值"""
@@ -440,7 +461,7 @@ class EnhancedEmotionalState:
                 'user_key': data.get('user_key', ''),
                 'favor': data.get('favor', 0),
                 'intimacy': data.get('intimacy', 0),
-                'relationship_stage': data.get('relationship_stage', '初识期'),
+                'relationship_stage': data.get('relationship_stage', get_stage_name('INITIAL')),
                 'stage_composite_score': data.get('stage_composite_score', 0.0),
                 'stage_progress': data.get('stage_progress', 0.0),
                 'force_update_counter': data.get('force_update_counter', 0),

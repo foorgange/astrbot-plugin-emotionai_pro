@@ -20,6 +20,7 @@ from astrbot.core.agent.message import TextPart
 from .stream_filter import StreamingMarkerFilter
 from .config import PluginConfig, PrivacyLevel
 from .constants import EmotionConstants
+from .stage_names import configure_stage_names
 from .models import EnhancedEmotionalState
 from .storage import UserStateRepository, BackupManager
 from .cache import ShardedTTLCache
@@ -43,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.20")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.21")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -67,6 +68,17 @@ class EmotionAIProPlugin(Star):
             intimacy_min=self.config.intimacy_min,
             intimacy_max=self.config.intimacy_max,
         )
+
+        # 应用「关系阶段名称自定义」（v4.0.21）
+        #
+        # 必须在这里做（与数值边界同一时机）：阶段显示名是进程级单例
+        # （stage_names 模块），models 的存档校验、managers 的初始态判断、
+        # relationship_manager 的面板/建议文案全部从它取。不同步的后果：
+        # 用户在配置界面改了阶段名，界面仍显示旧名，甚至旧存档被当成
+        # 无效阶段而修复重置。
+        _renamed = configure_stage_names(self.config.stage_names)
+        if _renamed:
+            logger.info(f"关系阶段自定义名称已生效: {', '.join(_renamed)}")
 
         # 把配置里的「插件处理优先级」应用到本插件的两个 LLM 钩子
         # （v4.0.20：该配置项此前从未被读取，详见方法内注释）
@@ -114,6 +126,9 @@ class EmotionAIProPlugin(Star):
             # 否则这两个配置项在插件里没有任何读取点（死配置）。
             change_min=self.config.change_min,
             change_max=self.config.change_max,
+            # v4.0.21：亲密度的单次变化幅度（此前写死 ±5，用户无法配置）
+            intimacy_change_min=self.config.intimacy_change_min,
+            intimacy_change_max=self.config.intimacy_change_max,
             enable_ai_text_generation=self.config.enable_ai_text_generation,
         )
 
@@ -173,6 +188,9 @@ class EmotionAIProPlugin(Star):
             "intimacy_max": "intimacy_max",
             "change_min": "change_min",
             "change_max": "change_max",
+            "intimacy_change_min": "intimacy_change_min",
+            "intimacy_change_max": "intimacy_change_max",
+            "stage_names": "stage_names",
             "admin_qq_list": "admin_qq_list",
             "plugin_priority": "plugin_priority",
             "enable_attitude_system": "enable_attitude_system",

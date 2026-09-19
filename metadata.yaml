@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.0.20
+version: v4.0.21
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -52,6 +52,14 @@ desc: >
 
   注入的情感状态只作为参考，不会抢占你设定的人设；描述中也不会自称
   「AI」，而是自动使用你配置的 bot 人设名。
+
+
+  【个性定制】
+
+  关系阶段的显示名称可以随你喜欢改——想把「初识期」叫「初见」、
+  「共生期」叫「灵魂伴侣」都可以，改完后面板、进阶建议等各处提示同步换新，
+  升级前的老存档也不会因为改名而被重置。
+  亲密度的单次增减幅度同样可调，默认 ±3，想让关系升温更快或更慢都行。
 
 
   【管理与运维】

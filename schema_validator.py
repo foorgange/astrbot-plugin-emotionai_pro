@@ -27,6 +27,14 @@ class ConfigValidator:
             "intimacy_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
             "change_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
             "change_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            # v4.0.21：亲密度的单次变化幅度（此前写死 ±5）
+            "intimacy_change_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            "intimacy_change_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            # v4.0.21：关系阶段显示名自定义（嵌套 object，键为出厂默认名/英文 key）
+            "stage_names": {
+                "type": "object",
+                "additionalProperties": {"type": "string"}
+            },
             "admin_qq_list": {
                 "type": "array",
                 "items": {"type": "string", "pattern": "^[0-9]{5,12}$"}
@@ -81,6 +89,15 @@ class ConfigValidator:
             if config_data['change_min'] >= config_data['change_max']:
                 logger.error(f"change_min ({config_data['change_min']}) 必须小于 change_max ({config_data['change_max']})")
                 return False
+
+            # 亲密度的单次变化幅度对。用 .get 兜默认值：这两个字段是 v4.0.21
+            # 新增的可选键，旧配置文件里可能还没有（AstrBot 重启时会按 schema
+            # 默认值补写），不能因为键缺失就把整份配置判为非法。
+            _ic_min = config_data.get('intimacy_change_min', -3)
+            _ic_max = config_data.get('intimacy_change_max', 3)
+            if _ic_min >= _ic_max:
+                logger.error(f"intimacy_change_min ({_ic_min}) 必须小于 intimacy_change_max ({_ic_max})")
+                return False
             
             logger.info("配置文件验证成功")
             return True
@@ -106,6 +123,9 @@ class ConfigValidator:
             "intimacy_max": 100,
             "change_min": -10,
             "change_max": 5,
+            "intimacy_change_min": -3,
+            "intimacy_change_max": 3,
+            "stage_names": {},
             "admin_qq_list": [],
             "plugin_priority": 100000,
             "enable_attitude_system": True,

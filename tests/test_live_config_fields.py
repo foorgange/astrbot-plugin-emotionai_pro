@@ -93,12 +93,22 @@ class TestChangeRangeFollowsConfig(unittest.TestCase):
         out = expert._parse_emotion_analysis(payload, EnhancedEmotionalState(user_key="u"))
         self.assertEqual(out["favor"], -3, "favor 未被 change_min=-3 限制")
 
-    def test_intimacy_keeps_original_fixed_range(self):
-        """亲密度不受 change_min/max 影响，保持原固定 ±5（不擅自改变语义）"""
-        expert = _make_expert(change_min=-3, change_max=3)
+    def test_intimacy_does_not_follow_favor_range(self):
+        """亲密度有**自己的**配置对（v4.0.21），不再跟 change_min/max 走
+
+        v4.0.20 时这里断言「亲密度保持固定 ±5」；v4.0.21 起亲密度改由
+        intimacy_change_min/max 驱动，默认 ±3。
+        """
+        expert = _make_expert(change_min=-10, change_max=5)
+        self.assertEqual(
+            (expert.intimacy_change_min, expert.intimacy_change_max), (-3, 3),
+            "不显式配置时亲密度应退回出厂默认 ±3",
+        )
         updates = _parse_with_ranges(expert)
-        self.assertEqual(updates["intimacy"], -5,
-                         "亲密度不该被 change_min=-3 改变（那是好感度的字段）")
+        self.assertEqual(updates["intimacy"], -3,
+                         "亲密度应按自己的默认 ±3 钳制（既不是老的 ±5，也不跟好感度配置走）")
+        self.assertEqual(updates["favor"], 5,
+                         "好感度仍应由 change_min/max 决定")
 
     def test_default_range_is_used_when_not_configured(self):
         """不传参时退回默认 -10/5"""
@@ -134,6 +144,152 @@ class TestChangeRangeFollowsConfig(unittest.TestCase):
         # 写死 ±5 的实现会返回 5，与配置的 3 不符
         self.assertNotEqual(updates["favor"], 5)
         self.assertEqual(updates["favor"], 3)
+
+
+class TestIntimacyChangeRangeFollowsConfig(unittest.TestCase):
+    """v4.0.21：亲密度的单次变化幅度必须由 intimacy_change_min/max 决定
+
+    背景：v4.0.21 之前这里是写死的 `max(-5, min(5, v))` —— LLM 一条消息
+    就能让亲密度跳 5 点，而用户没有任何配置项能约束它（和 v4.0.20 修掉的
+    change_min/change_max 死配置是同一类问题）。
+    现在由配置驱动，出厂默认 ±3（比原来的 ±5 更保守）。
+
+    注意作用范围：这一对**只**约束亲密度，绝不碰好感度 ——
+    好感度仍由 change_min/max 管（见 TestChangeRangeFollowsConfig）。
+    """
+
+    @staticmethod
+    def _payload(intimacy):
+        return ('{"emotion_updates": {"favor": 0, "intimacy": %d},'
+                ' "relationship": "测试关系", "attitude": "测试态度"}' % intimacy)
+
+    def _parse(self, expert, intimacy):
+        from emotionai_pro.models import EnhancedEmotionalState
+        return expert._parse_emotion_analysis(
+            self._payload(intimacy), EnhancedEmotionalState(user_key="u")
+        )
+
+    def test_config_range_is_applied_to_intimacy(self):
+        """设成 -3/3 后，LLM 返回的 ±99 应被削到 ±3"""
+        expert = _make_expert(intimacy_change_min=-3, intimacy_change_max=3)
+        self.assertEqual(expert.intimacy_change_min, -3)
+        self.assertEqual(expert.intimacy_change_max, 3)
+        self.assertEqual(self._parse(expert, 99)["intimacy"], 3)
+        self.assertEqual(self._parse(expert, -99)["intimacy"], -3)
+
+    def test_default_is_pm3(self):
+        """不传参时退回出厂默认 ±3（v4.0.21 起不再是 ±5）"""
+        expert = _make_expert()
+        self.assertEqual(
+            (expert.intimacy_change_min, expert.intimacy_change_max), (-3, 3)
+        )
+
+    def test_favor_is_not_affected_by_intimacy_range(self):
+        """intimacy_change_* 绝不改变好感度的钳制结果"""
+        expert = _make_expert(intimacy_change_min=-1, intimacy_change_max=1)
+        out = self._parse(expert, 99)
+        self.assertEqual(out["intimacy"], 1)
+        self.assertEqual(out["favor"], 0, "好感度被亲密度配置误伤了")
+
+    def test_illegal_pair_falls_back_to_default(self):
+        """非法组合整对退回默认 ±3，绝不半套生效"""
+        for bad in (
+            dict(intimacy_change_min=3, intimacy_change_max=2),   # 符号填反
+            dict(intimacy_change_min=2, intimacy_change_max=2),   # 相等
+            dict(intimacy_change_min=-1, intimacy_change_max=-5), # 都为负
+            dict(intimacy_change_min=None, intimacy_change_max=5),
+            dict(intimacy_change_min="x", intimacy_change_max=5),
+            dict(intimacy_change_min=True, intimacy_change_max=5),
+            dict(intimacy_change_min=-99999, intimacy_change_max=5),  # 量级离谱
+        ):
+            expert = _make_expert(**bad)
+            self.assertEqual(
+                (expert.intimacy_change_min, expert.intimacy_change_max), (-3, 3),
+                f"坏配置 {bad} 未被整对退回默认",
+            )
+
+    def test_local_fallback_path_is_clamped_too(self):
+        """本地兜底路径（不走 LLM）也必须受配置约束
+
+        `_generate_smart_fallback` 的「亲密互动」分支会写死产出 intimacy=3。
+        若用户把上限配成 1，这个值必须被削到 1 —— 否则就是又一起
+        「配置没生效」。三条路径在 analyze_and_update_emotion 里都汇到
+        `_ensure_updates_completeness`，钳制就做在那里。
+        """
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(intimacy_change_min=-1, intimacy_change_max=1)
+        state = EnhancedEmotionalState(user_key="u")
+
+        raw = expert._generate_smart_fallback("宝贝", "", state)
+        self.assertEqual(raw["intimacy"], 3, "兜底路径原始值应为写死的 3")
+
+        out = expert._ensure_updates_completeness(raw, state)
+        self.assertEqual(out["intimacy"], 1, "漏斗处未按 intimacy_change_max=1 钳制")
+
+    def test_text_extraction_path_is_clamped_too(self):
+        """「从文本提取」兜底路径同样受约束"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(intimacy_change_min=-1, intimacy_change_max=1)
+        state = EnhancedEmotionalState(user_key="u")
+
+        raw = expert._extract_updates_from_text("非常亲密的关系")
+        self.assertEqual(raw["intimacy"], 2, "文本提取的原始值应为 2")
+
+        out = expert._ensure_updates_completeness(raw, state)
+        self.assertEqual(out["intimacy"], 1, "漏斗处未按配置钳制文本提取路径")
+
+    def test_funnel_does_not_touch_favor(self):
+        """本次只钳亲密度：好感度行为必须与 v4.0.20 保持一致（防回归）"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert()
+        state = EnhancedEmotionalState(user_key="u")
+        raw = expert._generate_smart_fallback("宝贝", "", state)
+        out = expert._ensure_updates_completeness(raw, state)
+        self.assertEqual(out["favor"], raw["favor"], "好感度被漏斗改动了")
+        self.assertEqual(out["intimacy"], 3, "默认 ±3 下亲密度 3 不应被削")
+
+    def test_default_clamp_is_idempotent_on_llm_path(self):
+        """LLM 路径已经在区间内的值，过漏斗后不应再变"""
+        from emotionai_pro.models import EnhancedEmotionalState
+
+        expert = _make_expert(intimacy_change_min=-2, intimacy_change_max=4)
+        state = EnhancedEmotionalState(user_key="u")
+        llm_out = self._parse(expert, 3)
+        self.assertEqual(llm_out["intimacy"], 3)
+        funnelled = expert._ensure_updates_completeness(dict(llm_out), state)
+        self.assertEqual(funnelled["intimacy"], 3, "幂等性被破坏")
+
+    def test_reverse_proof_old_hardcoded_pm5_would_fail(self):
+        """反向证明：若仍写死 ±5，配成 ±3 时这里就会失败"""
+        expert = _make_expert(intimacy_change_min=-3, intimacy_change_max=3)
+        out = self._parse(expert, 99)
+        self.assertNotEqual(out["intimacy"], 5, "亲密度仍是写死的 ±5（配置未接通）")
+        self.assertEqual(out["intimacy"], 3)
+
+    def test_schema_has_slider_and_matches_pydantic(self):
+        """_conf_schema.json 必须给这两个字段配 slider（图形化配置），
+        且默认值与 PluginConfig 一致 —— 两边不一致就会出现
+        「界面显示一个值、实际生效另一个值」"""
+        import json
+
+        root = Path(__file__).resolve().parent.parent
+        schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
+        cfg = PluginConfig()
+
+        for field, default in (
+            ("intimacy_change_min", cfg.intimacy_change_min),
+            ("intimacy_change_max", cfg.intimacy_change_max),
+        ):
+            node = schema[field]
+            self.assertIn("slider", node, f"{field} 缺少 slider，无法图形化配置")
+            slider = node["slider"]
+            self.assertLessEqual(slider["min"], default)
+            self.assertGreaterEqual(slider["max"], default)
+            self.assertEqual(node["default"], default,
+                             f"{field} 的 schema 默认值与 PluginConfig 不一致")
 
 
 class TestSignificanceThresholdFollowsConfig(unittest.TestCase):
@@ -269,6 +425,16 @@ class TestConfigRepairInsteadOfReject(unittest.TestCase):
         self.assertTrue(cm._validate_config(cfg))
         self.assertEqual(cfg.force_update_interval, 5)
 
+    def test_reversed_intimacy_pair_is_repaired_not_rejected(self):
+        """v4.0.21：亲密度的变化幅度对填反时也只修那一对"""
+        cm = self._mk_manager()
+        cfg = PluginConfig(intimacy_change_min=3, intimacy_change_max=2)
+        self.assertTrue(cm._validate_config(cfg))
+        self.assertEqual(
+            (cfg.intimacy_change_min, cfg.intimacy_change_max), (-3, 3),
+            "填反的亲密度幅度对应被重置为默认 ±3",
+        )
+
 
 class TestPluginWiresTheFields(unittest.TestCase):
     """源码级断言：这些字段必须真的被传下去/读取，防止将来又被架空"""
@@ -281,6 +447,17 @@ class TestPluginWiresTheFields(unittest.TestCase):
         src = self._src("main.py")
         self.assertIn("change_min=self.config.change_min", src)
         self.assertIn("change_max=self.config.change_max", src)
+
+    def test_main_passes_intimacy_change_range_to_expert(self):
+        """v4.0.21：亲密度的变化幅度也必须从配置传进 Expert"""
+        src = self._src("main.py")
+        self.assertIn("intimacy_change_min=self.config.intimacy_change_min", src)
+        self.assertIn("intimacy_change_max=self.config.intimacy_change_max", src)
+        base_mapping = self._src("main.py")
+        self.assertIn('"intimacy_change_min": "intimacy_change_min"', base_mapping,
+                      "base_mapping 白名单漏了 intimacy_change_min")
+        self.assertIn('"intimacy_change_max": "intimacy_change_max"', base_mapping,
+                      "base_mapping 白名单漏了 intimacy_change_max")
 
     def test_main_passes_text_generation_switch(self):
         src = self._src("main.py")

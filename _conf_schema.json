@@ -41,6 +41,77 @@
     "default": 5,
     "hint": "填正数，例如 3 表示单次最多涨 3 点。必须大于「单次减少的最大幅度」"
   },
+  "intimacy_change_min": {
+    "description": "亲密度单次减少的最大幅度",
+    "type": "int",
+    "default": -3,
+    "slider": {
+      "min": -20,
+      "max": 0,
+      "step": 1
+    },
+    "hint": "填负数，例如 -3 表示亲密度单次最多降 3 点。可拖动滑块，也可直接输入"
+  },
+  "intimacy_change_max": {
+    "description": "亲密度单次增加的最大幅度",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "填正数，例如 3 表示亲密度单次最多涨 3 点。可拖动滑块，也可直接输入"
+  },
+  "stage_names": {
+    "description": "关系阶段名称自定义",
+    "type": "object",
+    "items": {
+      "初识期": {
+        "description": "第一阶段（初始阶段）显示名",
+        "type": "string",
+        "default": "初识期",
+        "hint": "好感度与亲密度都还较低时的阶段"
+      },
+      "深化期": {
+        "description": "第二阶段显示名",
+        "type": "string",
+        "default": "深化期",
+        "hint": "关系稳步加深的阶段"
+      },
+      "承诺期": {
+        "description": "第三阶段显示名",
+        "type": "string",
+        "default": "承诺期",
+        "hint": "信任与默契已成为主旋律的阶段"
+      },
+      "共生期": {
+        "description": "最高阶段显示名",
+        "type": "string",
+        "default": "共生期",
+        "hint": "关系的最高阶段"
+      },
+      "冷淡期": {
+        "description": "负向阶段一显示名",
+        "type": "string",
+        "default": "冷淡期",
+        "hint": "好感度轻微转负（约 -1 ~ -30）时进入"
+      },
+      "反感期": {
+        "description": "负向阶段二显示名",
+        "type": "string",
+        "default": "反感期",
+        "hint": "好感度明显转负（约 -31 ~ -70）时进入"
+      },
+      "敌对期": {
+        "description": "负向阶段三显示名",
+        "type": "string",
+        "default": "敌对期",
+        "hint": "好感度严重转负（低于 -70）时进入"
+      }
+    },
+    "hint": "左侧是出厂默认名（不会随改名变化），把值改成你想要的名字即可；两个阶段不能用同一个名字；只影响显示，不影响阶段判定规则，旧存档会自动跟随新名"
+  },
   "admin_qq_list": {
     "description": "管理员QQ号列表",
     "type": "list",

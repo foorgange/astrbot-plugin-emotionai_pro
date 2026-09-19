@@ -3,8 +3,11 @@ import time
 from typing import Dict, Any, Optional, Tuple
 
 from .models import EnhancedEmotionalState
+from .stage_names import get_stage_name
 
 # 阶段顺序（用于计算"下一阶段"）
+# 内部逻辑一律用英文 key；显示名统一走 stage_names.get_stage_name(key)，
+# 用户在配置界面改阶段名时只影响显示，不动这里的任何判定逻辑。
 STAGE_ORDER = ["INITIAL", "DEEPENING", "COMMITMENT", "SYMBIOSIS"]
 
 
@@ -21,6 +24,10 @@ class DynamicWeightManager:
     """动态权重管理器 - 完整的原有实现"""
     
     # 关系阶段配置
+    #
+    # ⚠️ 这里的 "name" 只是**出厂默认显示名**。用户可在配置界面自定义
+    # 阶段名（v4.0.21），生效名以 stage_names.get_stage_name(key) 为准，
+    # 所有对外输出（面板 / 建议文案 / 下一阶段名）都走那个函数取。
     STAGE_CONFIGS = {
         "INITIAL": {
             "name": "初识期",
@@ -238,7 +245,7 @@ class DynamicWeightManager:
         next_key = _next_stage_key(target_stage)
         if next_key is not None:
             next_stage_threshold = cls.STAGE_CONFIGS[next_key]["composite_threshold"]
-            next_stage_name = cls.STAGE_CONFIGS[next_key]["name"]
+            next_stage_name = get_stage_name(next_key)
         else:
             next_stage_threshold = None
             next_stage_name = "已达最高阶段"
@@ -246,7 +253,7 @@ class DynamicWeightManager:
 
         info = {
             "stage": target_stage,
-            "stage_name": stage_config["name"],
+            "stage_name": get_stage_name(target_stage),
             "description": stage_config["description"],
             "favor_weight": favor_weight,
             "intimacy_weight": intimacy_weight,
@@ -270,25 +277,29 @@ class DynamicWeightManager:
     
     @classmethod
     def _get_negative_favor_stage_info(cls, state: EnhancedEmotionalState) -> Dict[str, Any]:
-        """获取负好感时的阶段信息"""
+        """获取负好感时的阶段信息
+
+        v4.0.21：负向三档补齐英文 key（COLD / AVERSION / HOSTILITY），
+        显示名走 stage_names.get_stage_name()，与正向阶段同一套自定义机制。
+        """
         composite_score = state.favor
-        
+
         if state.favor >= -30:
-            stage_name = "冷淡期"
+            stage_key = "COLD"
             description = "关系冷淡，需要修复"
             progress = max(0, (state.favor + 30) / 30 * 100)
         elif state.favor >= -70:
-            stage_name = "反感期"
+            stage_key = "AVERSION"
             description = "存在反感情绪"
             progress = max(0, (state.favor + 70) / 40 * 100)
         else:
-            stage_name = "敌对期"
+            stage_key = "HOSTILITY"
             description = "关系敌对"
             progress = 0
-        
+
         return {
             "stage": None,
-            "stage_name": stage_name,
+            "stage_name": get_stage_name(stage_key),
             "description": description,
             "favor_weight": 1.0,
             "intimacy_weight": 0.0,
@@ -331,11 +342,14 @@ class DynamicWeightManager:
     
         if state.favor < 0:
             if state.favor >= -30:
-                return "冷淡期：需要真诚道歉和积极行动来修复关系，避免进一步恶化。"
+                return (f"{get_stage_name('COLD')}：需要真诚道歉和积极行动来修复关系，"
+                        f"避免进一步恶化。")
             elif state.favor >= -70:
-                return "反感期：需要时间和耐心来缓解负面情绪，避免直接冲突。"
+                return (f"{get_stage_name('AVERSION')}：需要时间和耐心来缓解负面情绪，"
+                        f"避免直接冲突。")
             else:
-                return "敌对期：关系极度紧张，需要保持距离或寻求第三方调解。"
+                return (f"{get_stage_name('HOSTILITY')}：关系极度紧张，"
+                        f"需要保持距离或寻求第三方调解。")
     
         if stage_info["is_transitioning"]:
             if stage_info["intimacy_boost_active"]:
@@ -347,15 +361,16 @@ class DynamicWeightManager:
                 return (f"【阶段过渡完成】{stage_info['stage_name']}\n"
                        f"   已成功进入新阶段，关系正在稳定发展")
     
+        # 建议文案以「当前生效的阶段名」开头（用户在配置界面改过名时同步变化）
         advice_map = {
-            "INITIAL": 
-                "初识期：多展示个人魅力，建立良好第一印象。通过有趣的话题和积极的互动提升好感度。",
+            "INITIAL":
+                f"{get_stage_name('INITIAL')}：多展示个人魅力，建立良好第一印象。通过有趣的话题和积极的互动提升好感度。",
             "DEEPENING":
-                "深化期：分享更多个人经历和情感，建立信任基础。共同经历和深度交流是关键。", 
+                f"{get_stage_name('DEEPENING')}：分享更多个人经历和情感，建立信任基础。共同经历和深度交流是关键。",
             "COMMITMENT":
-                "承诺期：巩固信任和默契，在困难时刻相互支持。关系的深度比广度更重要。",
+                f"{get_stage_name('COMMITMENT')}：巩固信任和默契，在困难时刻相互支持。关系的深度比广度更重要。",
             "SYMBIOSIS":
-                "共生期：维持情感的深度连接，共同成长和创造美好回忆。"
+                f"{get_stage_name('SYMBIOSIS')}：维持情感的深度连接，共同成长和创造美好回忆。"
         }
     
         return advice_map.get(stage_info["stage"], "继续培养这段关系吧！")

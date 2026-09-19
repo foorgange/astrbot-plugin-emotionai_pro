@@ -16,6 +16,7 @@ from .storage import UserStateRepository, BackupManager
 from .cache import ShardedTTLCache
 from .constants import UpdateThresholds, TimeConstants, EmotionConstants
 from .config import PluginConfig
+from .stage_names import get_stage_name
 
 class UserStateManager:
     """用户状态管理器 - 完全优化版本"""
@@ -138,6 +139,11 @@ class UserStateManager:
                     return False
             
             # 严格的初始状态判断标准
+            #
+            # ⚠️ v4.0.21：阶段名可自定义，这里必须比「当前生效的初识期名字」
+            # （而不是写死的「初识期」），否则用户一改名，
+            # 「初始状态用户」就永远匹配不上 → /清理初始用户 失效。
+            initial_stage_name = get_stage_name("INITIAL")
             is_initial = (
                 state.favor == 0 and
                 state.intimacy == 0 and
@@ -146,7 +152,7 @@ class UserStateManager:
                 state.stats.total_count == 0 and
                 state.stats.positive_count == 0 and
                 state.stats.negative_count == 0 and
-                state.relationship_stage == "初识期" and
+                state.relationship_stage == initial_stage_name and
                 state.stage_composite_score == 0.0 and
                 state.force_update_counter == 0
             )

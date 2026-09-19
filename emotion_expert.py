@@ -23,7 +23,9 @@ class EmotionAnalysisExpert:
                  secondary_llm_provider: str = None, secondary_llm_model: str = None,
                  bot_name_provider=None, time_budget: float = 45.0,
                  max_providers: int = 3, change_min: int = -10,
-                 change_max: int = 5, enable_ai_text_generation: bool = True):
+                 change_max: int = 5, intimacy_change_min: int = -3,
+                 intimacy_change_max: int = 3,
+                 enable_ai_text_generation: bool = True):
         self.cache = cache
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
@@ -47,6 +49,16 @@ class EmotionAnalysisExpert:
         # 否则整对退回默认值（和 EmotionConstants.configure 同一策略）。
         self.change_min, self.change_max = self._clamp_pair(
             change_min, change_max, -10, 5
+        )
+        # 亲密度的单次变化幅度（v4.0.21 新增配置）
+        #
+        # ⚠️ 这两个值在 v4.0.21 之前是**写死的 ±5**，与好感度的
+        # change_min/change_max 一样属于「界面里没有、代码里拍脑袋」：
+        # 用户无法约束亲密度的一次性涨跌，LLM 一条消息就能让亲密度跳 5 点。
+        # 现在与好感度同一套机制：配置驱动 + _clamp_pair 整对校验，
+        # 出厂默认 ±3（比原来的 ±5 更保守）。
+        self.intimacy_change_min, self.intimacy_change_max = self._clamp_pair(
+            intimacy_change_min, intimacy_change_max, -3, 3
         )
         # 是否允许 LLM 生成态度/关系描述文本；关闭时走本地兜底文案
         self.enable_ai_text_generation = bool(enable_ai_text_generation)
@@ -782,16 +794,18 @@ class EmotionAnalysisExpert:
                                 int_value = int(value)
                                 # 限制变化范围（v4.0.20：好感度改由配置驱动）
                                 #
-                                # ⚠️ 只有 favor 用配置的 change_min/change_max：
-                                # 这两个字段的定义就是「**好感度**单次变化幅度」
-                                # （原作者 v3.30 也只对 favor 做此钳制），
-                                # 套到 intimacy 上会擅自改变亲密度的一次性变化幅度。
-                                # intimacy 与其余情绪维度沿用原先的固定幅度。
+                                # ⚠️ 只有 favor / intimacy 用配置的上下限：
+                                # change_min/max 的定义是「**好感度**单次变化幅度」，
+                                # intimacy_change_min/max 是「**亲密度**单次变化幅度」，
+                                # 两者都是用户在配置界面里显式设的。
+                                # 其余情绪维度（joy/trust/...）没有对应配置项，
+                                # 沿用原先的固定幅度 ±3。
                                 if emotion == 'favor':
                                     int_value = max(self.change_min,
                                                     min(self.change_max, int_value))
                                 elif emotion == 'intimacy':
-                                    int_value = max(-5, min(5, int_value))
+                                    int_value = max(self.intimacy_change_min,
+                                                    min(self.intimacy_change_max, int_value))
                                 else:
                                     int_value = max(-3, min(3, int_value))
                                 updates[emotion] = int_value
@@ -937,6 +951,28 @@ class EmotionAnalysisExpert:
         for field, default_value in required_fields.items():
             if field not in updates:
                 updates[field] = default_value
+        
+        # 亲密度钳制网（v4.0.21）
+        #
+        # `_parse_emotion_analysis` 里的钳制只作用于 **LLM 返回的文本**。
+        # 本地兜底路径（`_generate_smart_fallback` / `_generate_emergency_fallback` /
+        # `_extract_updates_from_text`）产生的是写死的小幅值（亲密度最大 3），
+        # 根本不经过那段代码。用户若把「亲密度单次变化」配得比 3 更窄，
+        # 本地兜底就会突破配置 —— 又是一起"配置没生效"。
+        #
+        # 三条路径在 `analyze_and_update_emotion` 里全部汇到本方法，
+        # 所以在这里补一道保险：LLM 路径的值已在配置区间内，再钳一次是幂等的。
+        #
+        # ⚠️ 只钳 intimacy（本次需求范围）。好感度存在同类缺口
+        # （本地兜底 favor 最大 min(3, pos_weight)），但改它会动到 v4.0.20
+        # 已交付的好感度语义，留给后续版本，本方法不碰 favor。
+        if 'intimacy' in updates:
+            try:
+                _iv = int(updates['intimacy'])
+            except (TypeError, ValueError):
+                _iv = 0
+            updates['intimacy'] = max(self.intimacy_change_min,
+                                      min(self.intimacy_change_max, _iv))
         
         # 确保有文本描述
         if 'relationship_text' not in updates:

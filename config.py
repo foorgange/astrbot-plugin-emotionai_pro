@@ -1,6 +1,6 @@
 # config.py
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from enum import Enum
 
 class PrivacyLevel(int, Enum):
@@ -43,6 +43,19 @@ class PluginConfig(BaseModel):
     intimacy_max: int = Field(default=100, ge=-1000, le=1000, description="亲密度最大值")
     change_min: int = Field(default=-10, ge=-1000, le=1000, description="好感度单次变化最小值")
     change_max: int = Field(default=5, ge=-1000, le=1000, description="好感度单次变化最大值")
+    # 亲密度的单次变化幅度（v4.0.21 新增）
+    #
+    # v4.0.21 之前这两个值是 emotion_expert.py 里写死的 ±5，用户无法约束。
+    # 默认 ±3（比原来的 ±5 更保守）：一次性亲密关系跳跃变小，
+    # 关系推进更自然，也和「好感度单次变化」的默认量级一致。
+    intimacy_change_min: int = Field(default=-3, ge=-1000, le=1000, description="亲密度单次减少的最大幅度")
+    intimacy_change_max: int = Field(default=3, ge=-1000, le=1000, description="亲密度单次增加的最大幅度")
+    # 关系阶段显示名自定义（v4.0.21）
+    #
+    # 键是**出厂默认阶段名**（初识期/深化期/承诺期/共生期/冷淡期/反感期/敌对期，
+    # 代码层同时兼容英文 key INITIAL/DEEPENING/...），值是用户想要的名字。
+    # 空 dict = 全部用默认名。阶段判定逻辑与阈值完全不受影响 —— 只改显示。
+    stage_names: Dict[str, str] = Field(default_factory=dict, description="关系阶段名称自定义")
     admin_qq_list: List[str] = Field(default_factory=list, description="管理员QQ号列表")
     plugin_priority: int = Field(default=100000, ge=1, le=1000000, description="插件处理优先级")
     enable_attitude_system: bool = Field(default=True, description="启用态度关系系统")
