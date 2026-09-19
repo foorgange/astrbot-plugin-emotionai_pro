@@ -199,7 +199,9 @@ class DynamicWeightManager:
     def calculate_stage(cls, state: EnhancedEmotionalState) -> Tuple[str, Dict[str, Any]]:
         """计算当前关系阶段和过渡状态 - 保持原有逻辑"""
         current_composite = cls._calculate_raw_composite(state)
-        previous_stage = state._previous_stage or "INITIAL"
+        # v4.1.1：基线缺失/非法时按分数归档，绝不猜 INITIAL（见
+        # _resolve_previous_stage 的完整说明）
+        previous_stage = cls._resolve_previous_stage(state, current_composite)
         previous_composite = state._previous_composite
         
         # 判断当前阶段
@@ -237,19 +239,62 @@ class DynamicWeightManager:
         return state.favor * stage_config["favor_weight"] + state.intimacy * stage_config["intimacy_weight"]
     
     @classmethod
+    def _raw_stage_by_score(cls, composite_score: float) -> str:
+        """无滞后的裸阶段判定（只看复合分阈值，不看历史基线）"""
+        if composite_score >= cls.STAGE_CONFIGS["SYMBIOSIS"]["composite_threshold"]:
+            return "SYMBIOSIS"
+        if composite_score >= cls.STAGE_CONFIGS["COMMITMENT"]["composite_threshold"]:
+            return "COMMITMENT"
+        if composite_score >= cls.STAGE_CONFIGS["DEEPENING"]["composite_threshold"]:
+            return "DEEPENING"
+        return "INITIAL"
+
+    @classmethod
+    def _resolve_previous_stage(cls, state: EnhancedEmotionalState,
+                                current_composite: float) -> str:
+        """取过渡基线阶段；基线缺失/非法时按当前复合分重建
+
+        ⚠️ v4.1.1：绝不能默认 "INITIAL"。
+
+        `_previous_stage` 只在 `get_stage_info`（展示路径）里推进，消息流
+        只读不写。于是以下用户的基线恒为空：
+          · 被 `_try_repair_user_data` 重建过的存档（修复清单历来漏了
+            这两个字段，v4.1.1 已补上）；
+          · v4.0.19 之前的老存档（键不存在）；
+          · 从来没看过面板/没触发过展示路径的用户。
+
+        空基线猜 INITIAL 的后果（线上真实实例，用户 2961113185）：
+          复合分早已越过承诺期/共生期的老用户，面板被打回「初识期」，
+          并且被**最高阶段**的亲密度门槛卡住——v4.0.22 起阻断期间不推进
+          基线，错基线便永远自愈不了，直到亲密度硬撑到最高档才一次性
+          跳级。该用户 favor=108 / intimacy=118 时面板显示
+          「关注塔菲喵 + 亲密度 118/120」，而他实际早在承诺期。
+
+        正确做法：按当前复合分归档到「分数对应阶段的下一级」，即视为
+        即将过渡——
+          · 显示回到真正的上一阶段（承诺期），门槛按目标阶段正常生效；
+          · 亲和度达标后 `get_stage_info` 把恢复出的基线落盘，自愈完成；
+          · 分数本就在初识期的新用户不受影响（下一级仍是初识期）。
+        """
+        saved = state._previous_stage
+        if isinstance(saved, str) and saved in STAGE_ORDER:
+            return saved
+        raw_stage = cls._raw_stage_by_score(current_composite)
+        return STAGE_ORDER[max(0, STAGE_ORDER.index(raw_stage) - 1)]
+
+    @classmethod
     def _get_stage_by_score(cls, composite_score: float, state: EnhancedEmotionalState) -> str:
-        """滞后版阶段判定：上升阈值 > 下降阈值，防止抖动"""
-        prev_stage = state._previous_stage or "INITIAL"
+        """滞后版阶段判定：上升阈值 > 下降阈值，防止抖动
+
+        v4.1.1：历史基线统一走 `_resolve_previous_stage`。旧实现直接
+        `state._previous_stage or "INITIAL"`，除了把缺失基线猜成初识期，
+        还会在存档里混进脏字符串时让 `STAGE_ORDER.index(prev_stage)`
+        抛 ValueError —— 而脏存档恰恰是会走到这里的场景。
+        """
+        prev_stage = cls._resolve_previous_stage(state, composite_score)
 
         # 计算当前"裸"阶段
-        if composite_score >= cls.STAGE_CONFIGS["SYMBIOSIS"]["composite_threshold"]:
-            raw_target = "SYMBIOSIS"
-        elif composite_score >= cls.STAGE_CONFIGS["COMMITMENT"]["composite_threshold"]:
-            raw_target = "COMMITMENT"
-        elif composite_score >= cls.STAGE_CONFIGS["DEEPENING"]["composite_threshold"]:
-            raw_target = "DEEPENING"
-        else:
-            raw_target = "INITIAL"
+        raw_target = cls._raw_stage_by_score(composite_score)
 
         # 滞后逻辑
         UP_THRESHOLD = cls.STAGE_CONFIGS[raw_target]["composite_threshold"]

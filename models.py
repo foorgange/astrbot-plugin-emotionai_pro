@@ -461,69 +461,78 @@ class EnhancedEmotionalState:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'EnhancedEmotionalState':
-        """从字典创建实例 - 增强版本"""
-        try:
-            # 提取基础字段
-            base_data = {
-                'user_key': data.get('user_key', ''),
-                'favor': data.get('favor', 0),
-                'intimacy': data.get('intimacy', 0),
-                'relationship_stage': data.get('relationship_stage', get_stage_name('INITIAL')),
-                'stage_composite_score': data.get('stage_composite_score', 0.0),
-                'stage_progress': data.get('stage_progress', 0.0),
-                'force_update_counter': data.get('force_update_counter', 0),
-                'last_force_update': data.get('last_force_update', 0),
-                'show_status': data.get('show_status', False),
-                'privacy_level': data.get('privacy_level')
-            }
-            
-            # 构建子对象
-            emotions_data = data.get('emotions', {})
-            emotions = EmotionalMetrics(**emotions_data)
-            
-            stats_data = data.get('stats', {})
-            stats = InteractionStats(**stats_data)
-            
-            descriptions_data = data.get('descriptions', {})
-            descriptions = TextDescriptions(**descriptions_data)
-            
-            state = cls(
-                **base_data,
-                emotions=emotions,
-                stats=stats,
-                descriptions=descriptions
-            )
+        """从字典创建实例 - 增强版本
 
-            # ⚠️ 必须恢复「过渡状态」的两个内部字段（v4.0.19 修正）
-            #
-            # `_previous_stage` / `_previous_composite` 是
-            # `DynamicWeightManager` 判定阶段升降与过渡保护的输入。旧版
-            # `from_dict` 从不恢复它们，于是每次从磁盘加载出来的状态都是
-            # `_previous_stage=None -> "INITIAL"`、`_previous_composite=0.0`：
-            #
-            #   previous_stage = state._previous_stage or "INITIAL"   # 恒为初识期
-            #   previous_stage != target_stage  ->  误判为"发生阶段跃迁"
-            #   -> 触发过渡保护，面板恒显「过渡完成」
-            #
-            # 结果就是：每次重启后第一次查询 /好感度，都会看到一条假的
-            # 「过渡完成」，且复合评分被 max(current, previous) 保护逻辑
-            # 用错误的基线参与计算。
-            #
-            # 存档里没有这两个键时（旧数据）保持默认，不强行猜测。
-            prev_stage = data.get('_previous_stage')
-            if isinstance(prev_stage, str) and prev_stage in cls.VALID_STAGE_KEYS:
-                state._previous_stage = prev_stage
+        ⚠️ v4.1.1：**不要在内部吞异常返回默认状态**。
 
-            prev_composite = data.get('_previous_composite')
-            if isinstance(prev_composite, (int, float)) and not isinstance(prev_composite, bool):
-                state._previous_composite = float(prev_composite)
+        旧实现里这一整段包着 try/except，异常时
+        `return cls(user_key=...)` —— favor/intimacy/统计全部归零。
+        后果是 storage.get_user_state 里 v4.0.19 精心加的修复分支
+        （_try_repair_user_data）**永远走不到**：它等的是异常，
+        from_dict 却自己把异常咽了。用户看到数值莫名清零，
+        日志里只有一行笼统的「从字典创建失败」。
 
-            return state
+        现在异常原样抛出，由各调用方按自己的策略处理：
+          · storage.get_user_state：就地捕获 → 数据修复 → 返回修复态；
+          · storage.get_all_user_states：跳过该条并记日志；
+          · managers.get_user_state：极端情况下才退默认态。
+        """
+        # 提取基础字段
+        base_data = {
+            'user_key': data.get('user_key', ''),
+            'favor': data.get('favor', 0),
+            'intimacy': data.get('intimacy', 0),
+            'relationship_stage': data.get('relationship_stage', get_stage_name('INITIAL')),
+            'stage_composite_score': data.get('stage_composite_score', 0.0),
+            'stage_progress': data.get('stage_progress', 0.0),
+            'force_update_counter': data.get('force_update_counter', 0),
+            'last_force_update': data.get('last_force_update', 0),
+            'show_status': data.get('show_status', False),
+            'privacy_level': data.get('privacy_level')
+        }
+        
+        # 构建子对象
+        emotions_data = data.get('emotions', {})
+        emotions = EmotionalMetrics(**emotions_data)
+        
+        stats_data = data.get('stats', {})
+        stats = InteractionStats(**stats_data)
+        
+        descriptions_data = data.get('descriptions', {})
+        descriptions = TextDescriptions(**descriptions_data)
+        
+        state = cls(
+            **base_data,
+            emotions=emotions,
+            stats=stats,
+            descriptions=descriptions
+        )
 
-        except (TypeError, ValueError, KeyError, AttributeError) as e:
-            logger.error(f"从字典创建EnhancedEmotionalState失败: {e}")
-            # 返回一个默认状态
-            return cls(user_key=data.get('user_key', 'unknown'))
+        # ⚠️ 必须恢复「过渡状态」的两个内部字段（v4.0.19 修正）
+        #
+        # `_previous_stage` / `_previous_composite` 是
+        # `DynamicWeightManager` 判定阶段升降与过渡保护的输入。旧版
+        # `from_dict` 从不恢复它们，于是每次从磁盘加载出来的状态都是
+        # `_previous_stage=None -> "INITIAL"`、`_previous_composite=0.0`：
+        #
+        #   previous_stage = state._previous_stage or "INITIAL"   # 恒为初识期
+        #   previous_stage != target_stage  ->  误判为"发生阶段跃迁"
+        #   -> 触发过渡保护，面板恒显「过渡完成」
+        #
+        # 结果就是：每次重启后第一次查询 /好感度，都会看到一条假的
+        # 「过渡完成」，且复合评分被 max(current, previous) 保护逻辑
+        # 用错误的基线参与计算。
+        #
+        # 存档里没有这两个键时（旧数据）保持默认，不强行猜测。
+        prev_stage = data.get('_previous_stage')
+        if isinstance(prev_stage, str) and prev_stage in cls.VALID_STAGE_KEYS:
+            state._previous_stage = prev_stage
+
+        prev_composite = data.get('_previous_composite')
+        if isinstance(prev_composite, (int, float)) and not isinstance(prev_composite, bool):
+            state._previous_composite = float(prev_composite)
+
+        return state
     
     def should_force_update(self, force_update_interval: int) -> bool:
         """判断是否需要强制更新"""

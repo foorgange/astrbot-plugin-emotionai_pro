@@ -172,6 +172,16 @@ class UserStateRepository:
                 logger.error(f"用户 {user_key} 数据格式错误: {e}")
                 # 尝试修复损坏的数据
                 await self._try_repair_user_data(user_key)
+                # v4.1.1：修复已落盘，直接把修复后的记录读出来返回。
+                # 不能返回 None —— 上层（managers.get_user_state）会把 None
+                # 当成新用户造一个 favor=0 的默认状态并缓存，既让面板显示
+                # 归零，又可能在后续保存时把修复好的存档覆盖掉。
+                repaired = self._user_data.get(user_key)
+                if repaired is not None:
+                    try:
+                        return EnhancedEmotionalState.from_dict(repaired)
+                    except (TypeError, KeyError, ValueError, AttributeError):
+                        logger.error(f"用户 {user_key} 修复后仍无法解析")
                 return None
         return None
     
@@ -206,7 +216,13 @@ class UserStateRepository:
                               "stage_composite_score", "stage_progress",
                               "force_update_counter", "last_force_update",
                               "show_status", "privacy_level",
-                              "stats", "descriptions", "emotions"):
+                              "stats", "descriptions", "emotions",
+                              # v4.1.1：过渡基线同样必须抢救。漏了它，
+                              # 修复后的老用户 _previous_stage=None，
+                              # calculate_stage 只能猜 INITIAL → 被打回
+                              # 初识期并被最高阶段的门槛永久卡住
+                              # （线上实例：用户 2961113185）
+                              "_previous_stage", "_previous_composite"):
                     if field not in raw:
                         continue
                     candidate = dict(merged)
@@ -217,6 +233,18 @@ class UserStateRepository:
                         continue
                     merged[field] = raw[field]
                     salvaged.append(field)
+
+                # from_dict 对这两个字段是「非法即忽略」而不是抛错，
+                # 上面的循环会把脏值也搬进 merged；这里再拦一道，
+                # 绝不让非法基线写回存档（None 表示缺失，由
+                # calculate_stage 按分数重建）
+                if merged.get("_previous_stage") is not None and \
+                        merged["_previous_stage"] not in EnhancedEmotionalState.VALID_STAGE_KEYS:
+                    merged["_previous_stage"] = None
+                prev_composite = merged.get("_previous_composite")
+                if isinstance(prev_composite, bool) or \
+                        not isinstance(prev_composite, (int, float)):
+                    merged["_previous_composite"] = 0.0
 
                 self._user_data[user_key] = merged
                 await self.user_storage.save(self._user_data)
@@ -297,7 +325,7 @@ class UserStateRepository:
         for user_key, data in self._user_data.items():
             try:
                 result[user_key] = EnhancedEmotionalState.from_dict(data)
-            except (TypeError, KeyError, ValueError) as e:
+            except (TypeError, KeyError, ValueError, AttributeError) as e:
                 logger.error(f"用户 {user_key} 数据格式错误: {e}")
                 # 跳过损坏的数据
                 continue
@@ -386,7 +414,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.1.0'
+            'plugin_version': '4.1.1'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'

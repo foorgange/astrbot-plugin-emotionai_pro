@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.1.0
+version: v4.1.1
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -22,7 +22,8 @@ desc: >
 
   初识期 → 深化期 → 承诺期 → 共生期，好感度与亲密度按不同权重共同推进；
   关系变差时还会进入冷淡期 / 反感期 / 敌对期，有真实的「变坏」路径。
-  阶段跃迁带滞后带与保护分，不会因为一次波动就反复横跳或掉级。
+  阶段跃迁带滞后带与保护分，不会因为一次波动就反复横跳或掉级；
+  存档损坏或从早期版本升级上来，也不会算错阶段或让数值归零。
 
 
   【AI 自主生成态度与关系描述】
