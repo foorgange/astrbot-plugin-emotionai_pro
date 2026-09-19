@@ -256,13 +256,20 @@ class AdminCommandHandler(BaseCommandHandler):
         user_key = self._resolve_user_key(user_input)
 
         state = await self.user_manager.get_user_state(user_key)
+        old_intimacy = state.intimacy
         state.favor = favor_value
 
         await self.user_manager.update_user_state(user_key, state)
         await self.plugin.invalidate_state_cache(user_key)
 
         mode_info = "（会话模式）" if self.config.session_based else ""
-        yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的好感度已设置为 {favor_value}")
+        message = f"【成功】用户 {user_input}{mode_info} 的好感度已设置为 {favor_value}"
+        # v4.1.3：好感度转负 → 亲密度同步清零（模型层约束，见
+        # EnhancedEmotionalState.__setattr__）。清零是静默发生的，
+        # 这里补一句说明，免得下次看面板以为亲密度「莫名其妙没了」。
+        if favor_value < 0 and old_intimacy:
+            message += f"；好感度已为负，亲密度同步清零（原 {old_intimacy}）"
+        yield event.plain_result(message)
         event.stop_event()
     
     async def set_intimacy(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
@@ -292,6 +299,19 @@ class AdminCommandHandler(BaseCommandHandler):
         user_key = self._resolve_user_key(user_input)
 
         state = await self.user_manager.get_user_state(user_key)
+
+        # v4.1.3：负好感阶段亲密度固定为 0，且规则高于管理员手动设置
+        # （亲密度只在好感度为正时才累积）。真设了也会被模型层夹成 0，
+        # 不如在这里讲清楚，免得提示「已设置成功」而实际是 0。
+        if state.favor < 0:
+            yield event.plain_result(
+                f"【提示】用户 {user_input} 当前好感度为负（{state.favor}），"
+                f"处于负好感阶段：亲密度固定为 0 且不随互动变化，无法手动设置。\n"
+                f"可先用 /设置好感度 把好感度调到 0 以上，再设置亲密度。"
+            )
+            event.stop_event()
+            return
+
         state.intimacy = intimacy_value
 
         await self.user_manager.update_user_state(user_key, state)

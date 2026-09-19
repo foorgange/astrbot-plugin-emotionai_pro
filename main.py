@@ -44,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.2")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.3")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -1290,11 +1290,30 @@ class EmotionAIProPlugin(Star):
         state.emotions.apply_update(emotion_updates)
     
         # 应用状态更新
-        for attr, change in state_updates.items():
+        #
+        # v4.1.3：固定「先 favor 后 intimacy」的顺序。
+        #
+        # 负好感阶段亲密度锁定为 0（见 EnhancedEmotionalState.__setattr__），
+        # 依赖 favor 先落值：若先把 intimacy 结算完、本轮 favor 才转负，
+        # 锁就漏了，用户会看到「好感度掉成负数、亲密度还是正值」。
+        # 原实现按 dict 键序遍历（键序来自 LLM 返回的 JSON，不可控）。
+        for attr in ("favor", "intimacy"):
+            if attr not in state_updates:
+                continue
+            change = state_updates[attr]
             current_value = getattr(state, attr)
             if attr == 'favor':
                 new_value = max(self.config.favour_min, min(self.config.favour_max, current_value + change))
             else:
+                # 负好感阶段亲密度固定为 0：直接跳过本轮变化，不做
+                # 「先加上再被 __setattr__ 静默夹成 0」——那会让日志
+                # 与实际结果对不上。
+                if state.favor < 0:
+                    logger.info(
+                        f"负好感阶段（好感度 {state.favor}）亲密度固定为 0，"
+                        f"忽略本轮亲密度变化: {change}"
+                    )
+                    continue
                 new_value = max(self.config.intimacy_min, min(self.config.intimacy_max, current_value + change))
             setattr(state, attr, new_value)
 
@@ -1360,8 +1379,20 @@ class EmotionAIProPlugin(Star):
         加成不受「单次变化幅度」约束——那是 LLM 单次打分的区间；里程碑
         是额外奖励，且每一项都能在配置里调（0=关闭）。任何异常只记警告，
         不影响主更新流程。
+
+        v4.1.3：负好感阶段（好感度 < 0）不发任何里程碑。亲密度在这条
+        路径上固定为 0（用户定的最高优先级规则，见
+        EnhancedEmotionalState.__setattr__），里程碑自然也不能例外——
+        否则「关系都闹僵了还因为聊得深涨亲密度」。
         """
         try:
+            if state.favor < 0:
+                logger.info(
+                    f"负好感阶段（好感度 {state.favor}）不发亲密度里程碑，"
+                    f"当前亲密度: {state.intimacy}"
+                )
+                return
+
             bonus = 0
             reasons = []
 

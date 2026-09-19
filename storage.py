@@ -11,7 +11,7 @@ import hashlib
 
 from astrbot.api import logger
 
-from .models import EnhancedEmotionalState
+from .models import EnhancedEmotionalState, clamp_intimacy_for_favor
 from .constants import PathConstants
 
 class AtomicJSONStorage:
@@ -246,6 +246,17 @@ class UserStateRepository:
                         not isinstance(prev_composite, (int, float)):
                     merged["_previous_composite"] = 0.0
 
+                # v4.1.3：负好感 → 亲密度必须为 0（用户定的最高优先级规则）。
+                #
+                # 上面那个循环里 `from_dict(candidate)` 造出来的对象亲密度
+                # 已被模型层夹成 0（没抛异常，所以字段被采纳），但 merged
+                # 字典里存的仍是存档原值 —— 直接写出就会「内存里是 0、
+                # 磁盘里是正值」，下次加载又被夹一次。这里用同一个规则
+                # 函数归一化，保证落盘与内存一致。
+                merged["intimacy"] = clamp_intimacy_for_favor(
+                    merged.get("favor", 0), merged.get("intimacy", 0)
+                )
+
                 self._user_data[user_key] = merged
                 await self.user_storage.save(self._user_data)
                 logger.warning(
@@ -414,7 +425,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.1.2'
+            'plugin_version': '4.1.3'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'

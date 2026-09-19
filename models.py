@@ -14,6 +14,40 @@ from .constants import EmotionConstants, TimeConstants
 from .config import AttitudeType, RelationshipStage, PrivacyLevel
 from .stage_names import get_stage_name, normalize_stage_name
 
+
+def is_negative_favor(favor: Any) -> bool:
+    """判断好感度是否处于「负好感」区间
+
+    负好感（favor < 0）在本项目里就是一条独立的关系路径：
+    冷淡期 / 反感期 / 敌对期三档纯按好感度阈值划分，目标是「把关系
+    修回去」而不是「继续成长」（见 relationship_manager.get_stage_info
+    的 favor < 0 分支）。类型异常时按非负处理，交给后续校验逻辑报错，
+    这里不做静默纠正。
+    """
+    if isinstance(favor, bool) or not isinstance(favor, (int, float)):
+        return False
+    return favor < 0
+
+
+def clamp_intimacy_for_favor(favor: Any, intimacy: Any) -> Any:
+    """亲密度的最高优先级规则（v4.1.3）
+
+    用户规则（2026-09-19 定）：**负好感阶段亲密度固定为 0**。
+    · 亲密度只在好感度为正时才累积；
+    · 好感度一旦掉到负数，亲密度立刻清零；
+    · 好感度回到 0 以上后，亲密度从 0 重新开始积累。
+
+    这条规则高于一切亲密度机制（LLM 打分、过渡期增益、里程碑加成、
+    管理员手动设置、存档修复、迁移），因此实现为共享函数 + 模型写入口
+    的统一约束（EnhancedEmotionalState.__setattr__），而不是在每个写入
+    点各写一遍 if——漏掉任何一处都会出现「负好感用户亲密度又涨起来」
+    的漏洞。字典类调用方（存档修复）也用同一个函数，保证口径一致。
+    """
+    if is_negative_favor(favor):
+        return 0
+    return intimacy
+
+
 @dataclass
 class EmotionalMetrics:
     """情感指标 - 专门处理8维情感"""
@@ -371,6 +405,36 @@ class EnhancedEmotionalState:
         
         # 验证进度值
         self._validate_progress_values()
+    
+    def __setattr__(self, name: str, value: Any) -> None:
+        """写入口统一约束（v4.1.3）：负好感 → 亲密度只能是 0
+
+        亲密度的写入入口远多于想像：LLM 打分（`emotion_expert`）、
+        过渡期增益（`apply_transition_benefits`）、里程碑加成
+        （`_apply_intimacy_milestones`）、管理员命令（
+        `set_intimacy` / `set_favor`）、存档修复（
+        `_try_repair_user_data`）、迁移（`migration.py`）、
+        反序列化（`from_dict`）…… 逐处写 if 必有漏网的一条，
+        而「负好感用户亲密度又涨起来了」直接违背用户定的规则。
+
+        所以把规则下沉到模型唯一的必经通道上：
+          · 写 `intimacy`：好感度为负 → 强制 0（这条同时覆盖
+            `from_dict`：dataclass 按声明顺序先 favor 后 intimacy，
+            读进来的 favor<0 存档亲密度会被直接纠成 0）；
+          · 写 `favor`：新值为负 → 亲密度同步清零（否则它会带着
+            旧值继续存在，直到下一次写入亲密度才被发现）。
+
+        ⚠️ 用 `self.__dict__` 直接写 intimacy 避免递归调回本方法。
+        ⚠️ 这里只做「锁定」，不做区间夹取——favor/intimacy 的上限下限
+        仍由各调用方按 EmotionConstants 处理，职责不混。
+        """
+        if name == "favor":
+            if is_negative_favor(value):
+                self.__dict__["intimacy"] = 0
+        elif name == "intimacy":
+            if is_negative_favor(self.__dict__.get("favor", 0)):
+                value = 0
+        super().__setattr__(name, value)
     
     def _validate_core_values(self):
         """验证核心值"""

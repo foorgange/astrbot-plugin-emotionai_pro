@@ -551,6 +551,17 @@ class DynamicWeightManager:
     @classmethod
     def apply_transition_benefits(cls, state: EnhancedEmotionalState, updates: Dict[str, Any]) -> Dict[str, Any]:
         """应用过渡期增益效果"""
+        # v4.1.3：负好感阶段不走过渡增益。
+        #
+        # 过渡增益（intimacy_boost_factor）会给「深度交流」的轮次额外
+        # 加成亲密度，是正好感阶段用来突破亲密度门槛的通道；负好感路径
+        # 下亲密度固定为 0（EnhancedEmotionalState.__setattr__），
+        # calculate_stage 返回的 intimacy_boost_active 本就是 False。
+        # 这里显式短路一遍：一是省掉一次完整的阶段计算，二是让机制边界
+        # 写在明面上，不依赖下游字段的巧合取值。
+        if state.favor < 0:
+            return updates
+
         target_stage, transition_info = cls.calculate_stage(state)
         
         if transition_info["intimacy_boost_active"]:
