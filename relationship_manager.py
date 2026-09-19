@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from .models import EnhancedEmotionalState
 from .constants import EmotionConstants
-from .stage_names import get_stage_name
+from .stage_names import get_stage_name, stage_key_from_name
 
 # 阶段顺序（用于计算"下一阶段"）
 # 内部逻辑一律用英文 key；显示名统一走 stage_names.get_stage_name(key)，
@@ -258,8 +258,8 @@ class DynamicWeightManager:
 
         `_previous_stage` 只在 `get_stage_info`（展示路径）里推进，消息流
         只读不写。于是以下用户的基线恒为空：
-          · 被 `_try_repair_user_data` 重建过的存档（修复清单历来漏了
-            这两个字段，v4.1.1 已补上）；
+          · 被 `_try_repair_user_data` 重建过的存档（v4.1.1 前修复清单
+            漏了这两个字段，键在但值是 null）；
           · v4.0.19 之前的老存档（键不存在）；
           · 从来没看过面板/没触发过展示路径的用户。
 
@@ -275,12 +275,34 @@ class DynamicWeightManager:
           · 显示回到真正的上一阶段（承诺期），门槛按目标阶段正常生效；
           · 亲和度达标后 `get_stage_info` 把恢复出的基线落盘，自愈完成；
           · 分数本就在初识期的新用户不受影响（下一级仍是初识期）。
+
+        ⚠️ v4.1.2 追加：重建值不得低于**存档里已达成的阶段**。
+
+        亲密度门槛是 v4.0.22 才引入的，此前阶段晋升只看复合分。于是有
+        一批老用户「阶段早就到位、亲密度其实没达标」，他们的存档
+        `relationship_stage` 里写着真实阶段（承诺期/共生期），而基线
+        因为存档修复或老格式被清空。若只按分数归档，这些人会被门槛
+        压回下一级——相当于因为「当年没有的规则」被降级。
+
+        修法：重建时取「分数归档」与「存档阶段」中较高的那个。
+          · 老用户保持当前阶段，不再被门槛踩下去；
+          · 等复合分涨到下一阶段时，门槛按**目标阶段**正常生效
+            （亲密度在「过渡到下一阶段」时该起作用的时候起作用）；
+          · 分数驱动的降级不受影响（滞后判定仍会把阶段降回去）。
         """
         saved = state._previous_stage
         if isinstance(saved, str) and saved in STAGE_ORDER:
             return saved
         raw_stage = cls._raw_stage_by_score(current_composite)
-        return STAGE_ORDER[max(0, STAGE_ORDER.index(raw_stage) - 1)]
+        reconstructed = STAGE_ORDER[max(0, STAGE_ORDER.index(raw_stage) - 1)]
+
+        # 存档阶段（显示名 → key）：负向三档与脏值都不在 STAGE_ORDER 里，
+        # 自然被跳过，不会影响正向阶段的归档
+        archived_key = stage_key_from_name(state.relationship_stage)
+        if archived_key in STAGE_ORDER and \
+                STAGE_ORDER.index(archived_key) > STAGE_ORDER.index(reconstructed):
+            return archived_key
+        return reconstructed
 
     @classmethod
     def _get_stage_by_score(cls, composite_score: float, state: EnhancedEmotionalState) -> str:

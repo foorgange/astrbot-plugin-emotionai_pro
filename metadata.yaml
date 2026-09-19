@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.1.1
+version: v4.1.2
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -67,6 +67,7 @@ desc: >
   阶段过渡，且每一段过渡的门槛可以分别设置，并随最大亲密度一起缩放。
   未达标的过渡会卡住、好感度不变化，状态面板与「/好感度」会提示还差
   多少点；有深度的交流、连续多日的互动也会额外奖励亲密度。
+  门槛只在迈向下一阶段时起作用，已经处于当前阶段的关系不会被它压低。
 
 
   【个性定制】

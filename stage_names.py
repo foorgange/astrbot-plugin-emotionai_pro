@@ -144,3 +144,23 @@ def normalize_stage_name(name: Any) -> Optional[str]:
     if key is not None:
         return get_stage_name(key)
     return None
+
+
+def stage_key_from_name(name: Any) -> Optional[str]:
+    """把阶段显示名解析成内部 key（normalize_stage_name 的反方向）
+
+    - 接受当前生效名与出厂默认名（改过名的旧存档）；
+    - 负向三档（COLD / AVERSION / HOSTILITY）同样可解析；
+    - 无法识别（None / 非字符串 / 空串 / 脏值）→ None。
+
+    重名不会造成歧义：`configure_stage_names` 拒绝与任何现有名字
+    （含出厂默认名）冲突的改名，所以「默认名 + 当前生效名」到 key
+    的映射始终是一对一的。
+    """
+    normalized = normalize_stage_name(name)
+    if normalized is None:
+        return None
+    for key, value in _current_names.items():
+        if value == normalized:
+            return key
+    return None
