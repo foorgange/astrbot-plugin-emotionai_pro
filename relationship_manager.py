@@ -3,6 +3,7 @@ import time
 from typing import Dict, Any, Optional, Tuple
 
 from .models import EnhancedEmotionalState
+from .constants import EmotionConstants
 from .stage_names import get_stage_name
 
 # 阶段顺序（用于计算"下一阶段"）
@@ -75,6 +76,66 @@ class DynamicWeightManager:
         }
     }
     
+    # 阶段过渡的亲密度门槛（v4.0.22）
+    #
+    # 复合评分达到下一阶段阈值只是**必要条件**；亲密度还必须达到
+    # 「亲密度上限 × 该百分比」才能完成过渡。0 = 关闭门槛（旧行为）。
+    #
+    # ⚠️ 与 EmotionConstants 同样的理由做成类属性 + configure() 注入：
+    # 本类是纯 classmethod 工具类，拿不到插件实例，而门槛百分比来自
+    # 用户配置。注入点两处缺一不可：
+    #   main.py::__init__ 与 config_manager.py::_apply_numeric_bounds
+    TRANSITION_INTIMACY_PCT = 50
+
+    @classmethod
+    def configure(cls, transition_intimacy_pct: int = None) -> None:
+        """用插件配置注入「过渡亲密度门槛百分比」（0-100，其余值忽略）"""
+        if transition_intimacy_pct is None or isinstance(transition_intimacy_pct, bool):
+            return
+        try:
+            pct = int(transition_intimacy_pct)
+        except (TypeError, ValueError):
+            return
+        if 0 <= pct <= 100:
+            cls.TRANSITION_INTIMACY_PCT = pct
+
+    @classmethod
+    def reset(cls) -> None:
+        """恢复出厂门槛（测试用）"""
+        cls.TRANSITION_INTIMACY_PCT = 50
+
+    @classmethod
+    def get_intimacy_gate(cls, state: EnhancedEmotionalState) -> Dict[str, Any]:
+        """计算阶段过渡的亲密度门槛（v4.0.22）
+
+        门槛 = 亲密度上限（EmotionConstants.MAX_INTIMACY，跟随用户配置）
+        × TRANSITION_INTIMACY_PCT%。返回 required / current / gap / met，
+        目标阶段显示名由调用方补 to_stage。
+        """
+        max_intimacy = EmotionConstants.MAX_INTIMACY
+        required = int(max_intimacy * cls.TRANSITION_INTIMACY_PCT / 100)
+        current = state.intimacy
+        gap = max(0, required - current)
+        return {
+            "required": required,
+            "current": current,
+            "gap": gap,
+            "met": gap <= 0,
+            "threshold_pct": cls.TRANSITION_INTIMACY_PCT,
+        }
+
+    @classmethod
+    def is_favor_frozen(cls, state: EnhancedEmotionalState) -> bool:
+        """过渡期亲密度未达标 → 好感度冻结（v4.0.22）
+
+        只在**阶段过渡期**且门槛未达标时成立；负好感不走阶段门禁。
+        calculate_stage 是纯读（不写 _previous_*），可在应用更新前安全调用。
+        """
+        if state.favor < 0:
+            return False
+        _, transition_info = cls.calculate_stage(state)
+        return bool(transition_info.get("intimacy_gate_blocked"))
+
     @classmethod
     def calculate_stage(cls, state: EnhancedEmotionalState) -> Tuple[str, Dict[str, Any]]:
         """计算当前关系阶段和过渡状态 - 保持原有逻辑"""
@@ -84,10 +145,22 @@ class DynamicWeightManager:
         
         # 判断当前阶段
         target_stage = cls._get_stage_by_score(current_composite, state)
-        
+
+        # v4.0.22：亲密度门槛。分数够升级、但亲密度没达到「上限×百分比」时，
+        # 把目标阶段压回当前阶段（过渡卡住）；_check_transition_status 会把
+        # 它标成「门槛阻断的过渡」，持续到亲密度达标为止。
+        gate_blocked = False
+        gate_target = None
+        if STAGE_ORDER.index(target_stage) > STAGE_ORDER.index(previous_stage):
+            if not cls.get_intimacy_gate(state)["met"]:
+                gate_blocked = True
+                gate_target = target_stage
+                target_stage = previous_stage
+
         # 检查是否处于阶段过渡期
         transition_info = cls._check_transition_status(
-            state, previous_stage, target_stage, previous_composite, current_composite
+            state, previous_stage, target_stage, previous_composite, current_composite,
+            gate_blocked=gate_blocked, gate_target=gate_target
         )
         
         return target_stage, transition_info
@@ -132,7 +205,8 @@ class DynamicWeightManager:
     @classmethod
     def _check_transition_status(cls, state: EnhancedEmotionalState, previous_stage: str, 
                                target_stage: str, previous_composite: float, 
-                               current_composite: float) -> Dict[str, Any]:
+                               current_composite: float, gate_blocked: bool = False,
+                               gate_target: Optional[str] = None) -> Dict[str, Any]:
         """检查过渡状态并应用保护机制"""
         transition_info = {
             "is_transitioning": False,
@@ -141,10 +215,13 @@ class DynamicWeightManager:
             "protected_composite": current_composite,
             "intimacy_boost_active": False,
             "transition_progress": 0.0,
-            "needed_intimacy_boost": 0
+            "needed_intimacy_boost": 0,
+            # v4.0.22：亲密度门槛阻断的过渡（分数够、亲密度没够）
+            "intimacy_gate_blocked": gate_blocked,
+            "intimacy_gate": None
         }
-        
-        if previous_stage != target_stage:
+
+        if previous_stage != target_stage or gate_blocked:
             transition_info["is_transitioning"] = True
             
             # 应用复合评分保护：不低于前一阶段的最高评分
@@ -152,8 +229,11 @@ class DynamicWeightManager:
             protected_score = max(current_composite, previous_composite)
             transition_info["protected_composite"] = protected_score
             
-            # 计算需要的亲密度提升
-            target_config = cls.STAGE_CONFIGS[target_stage]
+            # 计算需要的亲密度提升。
+            # v4.0.22：门槛阻断时 target_stage 已被压回当前阶段，增益必须按
+            # 「被挡住的阶段」配置算，否则过渡加成会按错的权重生效。
+            boost_target_key = gate_target or target_stage
+            target_config = cls.STAGE_CONFIGS[boost_target_key]
             needed_intimacy = cls._calculate_needed_intimacy(state, target_config, protected_score)
             transition_info["needed_intimacy_boost"] = needed_intimacy
             transition_info["intimacy_boost_active"] = needed_intimacy > 0
@@ -162,7 +242,21 @@ class DynamicWeightManager:
             transition_info["transition_progress"] = cls._calculate_transition_progress(
                 state, target_config, needed_intimacy
             )
-            
+
+            if gate_blocked:
+                # 门槛阻断：把「还差多少亲密度」并入过渡信息，
+                # 供面板 / 建议文案 / 命令展示使用
+                gate = dict(cls.get_intimacy_gate(state))
+                gate["to_stage"] = get_stage_name(gate_target) if gate_target else None
+                # 被挡住阶段的英文 key：apply_transition_benefits 取增益系数时
+                # 必须用它，不能用在压回当前阶段的 target_stage
+                gate["to_stage_key"] = gate_target
+                transition_info["intimacy_gate"] = gate
+                transition_info["needed_intimacy_boost"] = max(
+                    needed_intimacy, gate["gap"]
+                )
+                transition_info["intimacy_boost_active"] = True
+
         return transition_info
     
     @classmethod
@@ -266,13 +360,21 @@ class DynamicWeightManager:
             "is_transitioning": transition_info["is_transitioning"],
             "transition_progress": transition_info["transition_progress"],
             "intimacy_boost_active": transition_info["intimacy_boost_active"],
-            "needed_intimacy_boost": transition_info["needed_intimacy_boost"]
+            "needed_intimacy_boost": transition_info["needed_intimacy_boost"],
+            # v4.0.22：亲密度门槛（面板展示「还差多少」用）
+            "intimacy_gate_blocked": transition_info["intimacy_gate_blocked"],
+            "intimacy_gate": transition_info["intimacy_gate"]
         }
         
         # 保存当前状态用于下一次计算
-        state._previous_stage = target_stage
-        state._previous_composite = composite_score
-        
+        #
+        # v4.0.22：门槛阻断时**不推进基线**。_previous_stage 保持旧阶段，
+        # 下一轮 calculate_stage 会再次算出同一处阻断，过渡状态持续到
+        # 亲密度达标；一旦达标即走正常的一次性过渡并落盘新基线。
+        if not transition_info["intimacy_gate_blocked"]:
+            state._previous_stage = target_stage
+            state._previous_composite = composite_score
+
         return info
     
     @classmethod
@@ -312,7 +414,10 @@ class DynamicWeightManager:
             "is_transitioning": False,
             "transition_progress": 0.0,
             "intimacy_boost_active": False,
-            "needed_intimacy_boost": 0
+            "needed_intimacy_boost": 0,
+            # v4.0.22：负好感不走阶段门禁，两个键给默认值保持下游一致
+            "intimacy_gate_blocked": False,
+            "intimacy_gate": None
         }
     
     @classmethod
@@ -321,7 +426,13 @@ class DynamicWeightManager:
         target_stage, transition_info = cls.calculate_stage(state)
         
         if transition_info["intimacy_boost_active"]:
-            stage_config = cls.STAGE_CONFIGS[target_stage]
+            # v4.0.22：门槛阻断时 target_stage 已被压回当前阶段，增益系数必须按
+            # 「被挡住的阶段」取（与 _check_transition_status 里的
+            # boost_target_key 同一口径），否则显示的「需要提升多少」与实际
+            # 生效的倍数不是同一套配置。
+            gate = transition_info.get("intimacy_gate") or {}
+            boost_key = gate.get("to_stage_key") or target_stage
+            stage_config = cls.STAGE_CONFIGS[boost_key]
             boost_factor = stage_config["intimacy_boost_factor"]
             
             if 'intimacy' in updates:
@@ -352,6 +463,13 @@ class DynamicWeightManager:
                         f"需要保持距离或寻求第三方调解。")
     
         if stage_info["is_transitioning"]:
+            gate = stage_info.get("intimacy_gate")
+            if gate and not gate["met"]:
+                target_display = gate.get("to_stage") or "下一阶段"
+                return (f"【阶段过渡中】{stage_info['stage_name']} → {target_display}\n"
+                        f"   亲密度还未达标：{gate['current']}/{gate['required']}"
+                        f"（还差 {gate['gap']} 点）\n"
+                        f"   达标前好感度不会变化；多进行深度交流、保持连续互动可以提升亲密度")
             if stage_info["intimacy_boost_active"]:
                 return (f"【阶段过渡中】{stage_info['stage_name']}\n"
                         f"   当前需要提升亲密度 {stage_info['needed_intimacy_boost']} 点来适应新阶段\n"

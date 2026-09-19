@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.0.21
+version: v4.0.22
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -52,6 +52,16 @@ desc: >
 
   注入的情感状态只作为参考，不会抢占你设定的人设；描述中也不会自称
   「AI」，而是自动使用你配置的 bot 人设名。
+
+
+  【亲密度门槛】
+
+  关系想再进一步，光有好感度还不够——亲密度也必须达到「上限的一定比例」
+  （默认 50%）才能完成阶段过渡。没达标的期间过渡会卡住，好感度也不会变化，
+  状态面板、进阶建议与「/好感度」查询都会明确告诉你还差多少点。
+
+  亲密度也不会只靠每轮打分缓慢积累：第一次有深度的交流、连续多天保持互动，
+  都会额外奖励亲密度。门槛比例与各项奖励都能在配置里调整，也可以各自关掉。
 
 
   【个性定制】

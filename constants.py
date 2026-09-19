@@ -106,6 +106,11 @@ class UpdateThresholds:
     MAJOR_CHANGE = 8
     FORCE_UPDATE = 5
     EMOTIONAL_SIGNIFICANCE = 5
+    # v4.0.22：「首次深度交流」里程碑的判定线。
+    # 单轮互动的情感意义分（main._calculate_emotional_significance：
+    # 各维度变化绝对值之和，>=8 重大 / >=5 中等 / >=2 轻微）达到该值，
+    # 即算一次有深度的交流，触发一次性亲密度奖励。
+    DEEP_CONVERSATION = 5
 
 # 文件路径
 class PathConstants:

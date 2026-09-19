@@ -12,6 +12,7 @@ from astrbot.api import logger
 
 from .config import PluginConfig
 from .constants import EmotionConstants
+from .relationship_manager import DynamicWeightManager
 from .stage_names import configure_stage_names
 
 class ConfigManager:
@@ -174,6 +175,16 @@ class ConfigManager:
                 logger.info(f"配置热重载：关系阶段自定义名称已生效: {', '.join(renamed)}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"同步关系阶段名称失败，保持原名称: {e}")
+
+        # v4.0.22：同步「阶段过渡亲密度门槛」。与数值边界同一理由 ——
+        # 门槛百分比是 DynamicWeightManager 的进程级类属性，热重载时不
+        # 刷新就会出现「配置改了、门槛还是旧值」。
+        try:
+            DynamicWeightManager.configure(
+                transition_intimacy_pct=config.transition_intimacy_pct,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"同步过渡亲密度门槛失败，保持原门槛: {e}")
 
     async def _reload_config(self, new_config_data: Dict[str, Any]):
         """重新加载配置"""

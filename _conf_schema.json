@@ -63,6 +63,50 @@
     },
     "hint": "填正数，例如 3 表示亲密度单次最多涨 3 点。可拖动滑块，也可直接输入"
   },
+  "transition_intimacy_pct": {
+    "description": "阶段过渡所需亲密度占最大亲密度的百分比",
+    "type": "int",
+    "default": 50,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 5
+    },
+    "hint": "复合评分满足升级条件时，亲密度还必须达到该百分比才能完成过渡；未达标期间好感度不变化。填 0 关闭门槛"
+  },
+  "intimacy_first_deep_bonus": {
+    "description": "首次深度交流的亲密度奖励",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "第一次进行有深度的交流时额外奖励的亲密度，只发一次；填 0 关闭"
+  },
+  "intimacy_streak_days": {
+    "description": "连续互动多少天开始获得亲密度加成",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 2,
+      "max": 30,
+      "step": 1
+    },
+    "hint": "连续互动达到该天数后，每多互动一天都有亲密度加成；中断则重新计算"
+  },
+  "intimacy_streak_bonus": {
+    "description": "连续互动达标的每日亲密度加成",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "连续互动达标后，每天首次互动时奖励的亲密度；填 0 关闭"
+  },
   "stage_names": {
     "description": "关系阶段名称自定义",
     "type": "object",

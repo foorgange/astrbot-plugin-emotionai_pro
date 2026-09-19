@@ -453,7 +453,13 @@ class AdminCommandHandler(BaseCommandHandler):
         
         # 添加过渡状态信息
         if stage_info['is_transitioning']:
-            if stage_info['intimacy_boost_active']:
+            gate = stage_info.get('intimacy_gate')
+            if gate and not gate['met']:
+                response_lines.extend([
+                    f"过渡状态: 亲密度未达标（当前 {gate['current']}/{gate['required']}，还差 {gate['gap']} 点）",
+                    "未达标期间好感度不会变化"
+                ])
+            elif stage_info['intimacy_boost_active']:
                 response_lines.extend([
                     f"过渡状态: 进行中 ({stage_info['transition_progress']:.1f}%)",
                     f"需要亲密度: +{stage_info['needed_intimacy_boost']}点"

@@ -146,6 +146,13 @@ class InteractionStats:
     positive_count: int = 0
     negative_count: int = 0
     last_interaction_time: float = 0
+    # v4.0.22：亲密度里程碑的存档字段（旧存档没有这些键时按默认值加载）
+    # - deep_conversation_achieved：「首次深度交流」奖励是否已发（一次性防重复）
+    # - interaction_streak / last_active_date：连续互动天数与最后互动日期
+    #   （"YYYY-MM-DD"，本地时区；用于「连续多日互动」里程碑）
+    deep_conversation_achieved: bool = False
+    interaction_streak: int = 0
+    last_active_date: str = ""
     
     def __post_init__(self):
         """初始化后验证"""

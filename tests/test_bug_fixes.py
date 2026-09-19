@@ -90,9 +90,18 @@ class TestApplyExpertUpdatesNoDoubleCount(unittest.TestCase):
         """正面>负面 → positive 计数 +1"""
         plugin = type("P", (), {
             "_sanitize_ai_text": lambda self, t: t,
+            # 里程碑加成不在本测试范围（由 tests/test_intimacy_gate.py 覆盖），
+            # 这里给空操作桩；桩必须与真身同构，否则 _apply_expert_updates
+            # 一接入新逻辑就会 AttributeError。
+            "_apply_intimacy_milestones": lambda self, s, u: None,
             "config": type("C", (), {"favour_min": -100, "favour_max": 100,
-                                     "intimacy_min": 0, "intimacy_max": 100})(),
-            "weight_manager": type("WM", (), {"apply_transition_benefits": lambda self, s, u: u})(),
+                                     "intimacy_min": 0, "intimacy_max": 100,
+                                     "transition_intimacy_pct": 50,
+                                     "intimacy_first_deep_bonus": 3,
+                                     "intimacy_streak_days": 3,
+                                     "intimacy_streak_bonus": 1})(),
+            "weight_manager": type("WM", (), {"apply_transition_benefits": lambda self, s, u: u,
+                                              "is_favor_frozen": lambda self, s: False})(),
         })()
         from emotionai_pro.main import EmotionAIProPlugin
         # 直接调用 unbound 方法
@@ -107,9 +116,16 @@ class TestApplyExpertUpdatesNoDoubleCount(unittest.TestCase):
         """负面>正面 → negative 计数 +1"""
         plugin = type("P", (), {
             "_sanitize_ai_text": lambda self, t: t,
+            # 里程碑加成不在本测试范围（由 tests/test_intimacy_gate.py 覆盖）
+            "_apply_intimacy_milestones": lambda self, s, u: None,
             "config": type("C", (), {"favour_min": -100, "favour_max": 100,
-                                     "intimacy_min": 0, "intimacy_max": 100})(),
-            "weight_manager": type("WM", (), {"apply_transition_benefits": lambda self, s, u: u})(),
+                                     "intimacy_min": 0, "intimacy_max": 100,
+                                     "transition_intimacy_pct": 50,
+                                     "intimacy_first_deep_bonus": 3,
+                                     "intimacy_streak_days": 3,
+                                     "intimacy_streak_bonus": 1})(),
+            "weight_manager": type("WM", (), {"apply_transition_benefits": lambda self, s, u: u,
+                                              "is_favor_frozen": lambda self, s: False})(),
         })()
         from emotionai_pro.main import EmotionAIProPlugin
         state = EnhancedEmotionalState(user_key="u1")

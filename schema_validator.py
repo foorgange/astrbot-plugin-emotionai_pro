@@ -30,6 +30,11 @@ class ConfigValidator:
             # v4.0.21：亲密度的单次变化幅度（此前写死 ±5）
             "intimacy_change_min": {"type": "integer", "minimum": -1000, "maximum": 1000},
             "intimacy_change_max": {"type": "integer", "minimum": -1000, "maximum": 1000},
+            # v4.0.22：阶段过渡亲密度门槛 + 亲密度里程碑
+            "transition_intimacy_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+            "intimacy_first_deep_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
+            "intimacy_streak_days": {"type": "integer", "minimum": 2, "maximum": 30},
+            "intimacy_streak_bonus": {"type": "integer", "minimum": 0, "maximum": 100},
             # v4.0.21：关系阶段显示名自定义（嵌套 object，键为出厂默认名/英文 key）
             "stage_names": {
                 "type": "object",
@@ -125,6 +130,10 @@ class ConfigValidator:
             "change_max": 5,
             "intimacy_change_min": -3,
             "intimacy_change_max": 3,
+            "transition_intimacy_pct": 50,
+            "intimacy_first_deep_bonus": 3,
+            "intimacy_streak_days": 3,
+            "intimacy_streak_bonus": 1,
             "stage_names": {},
             "admin_qq_list": [],
             "plugin_priority": 100000,

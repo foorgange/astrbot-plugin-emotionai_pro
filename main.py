@@ -19,7 +19,7 @@ from astrbot.core.agent.message import TextPart
 # 导入优化后的模块
 from .stream_filter import StreamingMarkerFilter
 from .config import PluginConfig, PrivacyLevel
-from .constants import EmotionConstants
+from .constants import EmotionConstants, TimeConstants, UpdateThresholds
 from .stage_names import configure_stage_names
 from .models import EnhancedEmotionalState
 from .storage import UserStateRepository, BackupManager
@@ -44,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.21")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.0.22")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -67,6 +67,15 @@ class EmotionAIProPlugin(Star):
             favour_max=self.config.favour_max,
             intimacy_min=self.config.intimacy_min,
             intimacy_max=self.config.intimacy_max,
+        )
+
+        # 注入「阶段过渡亲密度门槛」（v4.0.22）
+        #
+        # 与数值边界同一时机、同一理由：DynamicWeightManager 是纯
+        # classmethod 工具类，拿不到插件实例，门槛百分比只能由配置注入
+        # （另一处注入点在 config_manager._apply_numeric_bounds）。
+        DynamicWeightManager.configure(
+            transition_intimacy_pct=self.config.transition_intimacy_pct,
         )
 
         # 应用「关系阶段名称自定义」（v4.0.21）
@@ -190,6 +199,10 @@ class EmotionAIProPlugin(Star):
             "change_max": "change_max",
             "intimacy_change_min": "intimacy_change_min",
             "intimacy_change_max": "intimacy_change_max",
+            "transition_intimacy_pct": "transition_intimacy_pct",
+            "intimacy_first_deep_bonus": "intimacy_first_deep_bonus",
+            "intimacy_streak_days": "intimacy_streak_days",
+            "intimacy_streak_bonus": "intimacy_streak_bonus",
             "stage_names": "stage_names",
             "admin_qq_list": "admin_qq_list",
             "plugin_priority": "plugin_priority",
@@ -609,7 +622,13 @@ class EmotionAIProPlugin(Star):
 
             # 添加过渡状态提示
             if stage_info['is_transitioning']:
-                if stage_info['intimacy_boost_active']:
+                gate = stage_info.get('intimacy_gate')
+                if gate and not gate['met']:
+                    base_info += (
+                        f"\n过渡期: 亲密度 {gate['current']}/{gate['required']}"
+                        f"（还差 {gate['gap']} 点；未达标期间好感度不变化）"
+                    )
+                elif stage_info['intimacy_boost_active']:
                     base_info += f"\n过渡期: 需要提升亲密度 {stage_info['needed_intimacy_boost']}点"
                 else:
                     base_info += f"\n过渡完成"
@@ -632,7 +651,14 @@ class EmotionAIProPlugin(Star):
 
             # 添加过渡状态信息
             if stage_info['is_transitioning']:
-                if stage_info['intimacy_boost_active']:
+                gate = stage_info.get('intimacy_gate')
+                if gate and not gate['met']:
+                    detailed_info += (
+                        f"   阶段过渡中（亲密度未达标 {stage_info['transition_progress']:.1f}%）\n"
+                        f"   亲密度: {gate['current']}/{gate['required']}（还差 {gate['gap']} 点）\n"
+                        f"   未达标期间好感度不会变化\n"
+                    )
+                elif stage_info['intimacy_boost_active']:
                     detailed_info += (
                         f"   阶段过渡中 ({stage_info['transition_progress']:.1f}%)\n"
                         f"   需要亲密度提升: +{stage_info['needed_intimacy_boost']}点\n"
@@ -1077,12 +1103,31 @@ class EmotionAIProPlugin(Star):
         # 在应用更新前，先应用过渡期增益
         updates = self.weight_manager.apply_transition_benefits(state, updates)
 
+        # v4.0.22：过渡期亲密度门槛未达标 → 冻结本轮好感度变化
+        #
+        # 门槛见 DynamicWeightManager.get_intimacy_gate：复合评分够升级、
+        # 亲密度却没达到「上限×百分比」时，过渡卡住。此时若还让好感度
+        # 按 LLM 打分继续起伏，用户看到的就是「分在涨、阶段不动」，
+        # 所以未达标期间好感度不变化。亲密度的变化与里程碑加成不受
+        # 影响——那正是用来突破门槛的通道。
+        #
+        # ⚠️ 用副本改，不动调用方的 expert_updates：它之后还要参与
+        # 「情感意义」计算与全局心情演进，被清零会低估本轮互动权重。
+        favor_frozen = self.weight_manager.is_favor_frozen(state)
+        apply_updates = dict(updates)
+        if favor_frozen:
+            if apply_updates.get('favor'):
+                logger.info(
+                    f"过渡期亲密度未达标，冻结本轮好感度变化: {apply_updates['favor']}"
+                )
+            apply_updates['favor'] = 0
+
         # 应用数值更新
         emotion_updates = {}
         state_updates = {}
     
         # 分离情感更新和状态更新
-        for key, value in updates.items():
+        for key, value in apply_updates.items():
             if key in ['joy', 'trust', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation']:
                 emotion_updates[key] = value
             elif key in ['favor', 'intimacy']:
@@ -1100,6 +1145,11 @@ class EmotionAIProPlugin(Star):
                 new_value = max(self.config.intimacy_min, min(self.config.intimacy_max, current_value + change))
             setattr(state, attr, new_value)
 
+        # v4.0.22：亲密度里程碑加成（首次深度交流 / 连续多日互动）。
+        # 用原始 updates 判定「深度交流」——冻结前的 favor 变化也是
+        # 本轮互动深度的证据，不该被门槛判定抹掉。
+        self._apply_intimacy_milestones(state, updates)
+
         # 判断互动性质
         total_positive = sum(v for v in emotion_updates.values() if v > 0) + sum(v for v in state_updates.values() if v > 0)
         total_negative = sum(abs(v) for v in emotion_updates.values() if v < 0) + sum(abs(v) for v in state_updates.values() if v < 0)
@@ -1115,25 +1165,25 @@ class EmotionAIProPlugin(Star):
             logger.debug(f"中性互动，正面变化: {total_positive}, 负面变化: {total_negative}")
 
         # 智能文本描述更新逻辑
-        source = updates.get('source', 'unknown')
-        llm_available = updates.get('llm_available', True)
+        source = apply_updates.get('source', 'unknown')
+        llm_available = apply_updates.get('llm_available', True)
     
         if source == 'llm_analysis' and llm_available:
             # 只有来自真实LLM的分析才更新文本描述（写入前清洗独立"AI"字样）
-            if 'attitude_text' in updates and updates['attitude_text']:
+            if 'attitude_text' in apply_updates and apply_updates['attitude_text']:
                 clean_attitude = self._sanitize_ai_text(updates['attitude_text'])
                 state.descriptions.update_attitude(clean_attitude)
                 logger.info(f"更新态度描述: '{clean_attitude}'")
 
-            if 'relationship_text' in updates and updates['relationship_text']:
+            if 'relationship_text' in apply_updates and apply_updates['relationship_text']:
                 clean_relationship = self._sanitize_ai_text(updates['relationship_text'])
                 state.descriptions.update_relationship(clean_relationship)
                 logger.info(f"更新关系描述: '{clean_relationship}'")
             
         elif source == 'emergency_fallback':
             # 紧急后备只记录建议，不直接更新
-            suggested_attitude = updates.get('suggested_attitude')
-            suggested_relationship = updates.get('suggested_relationship')
+            suggested_attitude = apply_updates.get('suggested_attitude')
+            suggested_relationship = apply_updates.get('suggested_relationship')
         
             if suggested_attitude:
                 logger.info(f"紧急后备建议态度: '{suggested_attitude}' (未应用)")
@@ -1143,6 +1193,88 @@ class EmotionAIProPlugin(Star):
             # 紧急后备时只进行极小幅度的数值更新
             logger.info("LLM不可用，使用紧急后备方案，仅更新数值")
             
+    def _apply_intimacy_milestones(self, state: EnhancedEmotionalState, updates: Dict[str, Any]):
+        """亲密度里程碑加成（v4.0.22）
+
+        亲密度除每轮常规变化（受「单次变化幅度」约束）外，还有两类
+        规则明确的里程碑，不必只靠 LLM 每轮打分缓慢积累：
+
+        ① 首次深度交流：单轮情感意义分达到 DEEP_CONVERSATION 线时发一次，
+           落盘 deep_conversation_achieved 防重复；
+        ② 连续多日互动：每天首次互动推进连击天数，达到配置天数后每过
+           一个新的一天发一次；中断（上次互动在昨天以前）重置为 1 天。
+
+        加成不受「单次变化幅度」约束——那是 LLM 单次打分的区间；里程碑
+        是额外奖励，且每一项都能在配置里调（0=关闭）。任何异常只记警告，
+        不影响主更新流程。
+        """
+        try:
+            bonus = 0
+            reasons = []
+
+            # ① 首次深度交流（一次性）
+            if (self.config.intimacy_first_deep_bonus > 0
+                    and not state.stats.deep_conversation_achieved):
+                significance = self._calculate_emotional_significance(updates)
+                if significance >= UpdateThresholds.DEEP_CONVERSATION:
+                    state.stats.deep_conversation_achieved = True
+                    bonus += self.config.intimacy_first_deep_bonus
+                    reasons.append("首次深度交流")
+
+            # ② 连续互动（每天最多一次）
+            if (self.config.intimacy_streak_bonus > 0
+                    and self.config.intimacy_streak_days >= 2):
+                streak, is_new_day = self._advance_interaction_streak(state)
+                if is_new_day and streak >= self.config.intimacy_streak_days:
+                    bonus += self.config.intimacy_streak_bonus
+                    reasons.append(f"连续互动{streak}天")
+
+            if bonus <= 0:
+                return
+
+            new_intimacy = state.intimacy + bonus
+            state.intimacy = max(
+                EmotionConstants.MIN_INTIMACY,
+                min(EmotionConstants.MAX_INTIMACY, new_intimacy),
+            )
+            logger.info(
+                f"亲密度里程碑加成 +{bonus}（{'、'.join(reasons)}），"
+                f"当前亲密度: {state.intimacy}"
+            )
+        except Exception as e:
+            # 里程碑是增益逻辑，异常时跳过即可，不能影响主更新流程
+            logger.warning(f"亲密度里程碑加成失败，已跳过: {e}")
+
+    @staticmethod
+    def _advance_interaction_streak(state: EnhancedEmotionalState) -> Tuple[int, bool]:
+        """推进连续互动天数；返回 (当前连击天数, 今天是否首次推进)
+
+        按本地日期比较：同一天多次互动只算一次；昨天互动过 → 连击+1；
+        中断（上次互动在昨天以前）→ 重置为 1。
+        """
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        last = state.stats.last_active_date or ""
+        if last == today:
+            return state.stats.interaction_streak, False
+
+        streak = 1
+        if last:
+            try:
+                last_ts = time.mktime(time.strptime(last, "%Y-%m-%d"))
+                # 上次互动日的次日 == 今天 → 连击延续（本地日期比较，
+                # 用 +1 天再取日期，天然处理月末/闰年）
+                next_day = time.strftime(
+                    "%Y-%m-%d", time.localtime(last_ts + TimeConstants.ONE_DAY)
+                )
+                if next_day == today:
+                    streak = state.stats.interaction_streak + 1
+            except ValueError:
+                streak = 1
+
+        state.stats.last_active_date = today
+        state.stats.interaction_streak = streak
+        return streak, True
+
     def _calculate_emotional_significance(self, updates: Dict[str, Any]) -> int:
         """计算情感意义分数"""
         significance = 0

@@ -50,6 +50,18 @@ class PluginConfig(BaseModel):
     # 关系推进更自然，也和「好感度单次变化」的默认量级一致。
     intimacy_change_min: int = Field(default=-3, ge=-1000, le=1000, description="亲密度单次减少的最大幅度")
     intimacy_change_max: int = Field(default=3, ge=-1000, le=1000, description="亲密度单次增加的最大幅度")
+    # 阶段过渡亲密度门槛 + 亲密度里程碑（v4.0.22）
+    #
+    # 亲密度从「每轮小幅波动」升级为「阶段过渡的硬门槛 + 里程碑加成」：
+    # ① transition_intimacy_pct：复合评分达到下一阶段阈值只是必要条件，
+    #    亲密度还必须达到「亲密度上限 × 该百分比」才能完成过渡；未达标
+    #    期间过渡卡住、好感度一并冻结（见 relationship_manager）。
+    # ② 首次深度交流 / 连续多日互动两类里程碑额外加成亲密度，让它不必
+    #    只靠 LLM 每轮打分缓慢积累。填 0 即关闭对应加成。
+    transition_intimacy_pct: int = Field(default=50, ge=0, le=100, description="阶段过渡所需亲密度占最大亲密度的百分比(0=关闭门槛)")
+    intimacy_first_deep_bonus: int = Field(default=3, ge=0, le=100, description="首次深度交流的亲密度奖励")
+    intimacy_streak_days: int = Field(default=3, ge=2, le=30, description="连续互动多少天开始获得亲密度加成")
+    intimacy_streak_bonus: int = Field(default=1, ge=0, le=100, description="连续互动达标后每日首次互动的亲密度加成")
     # 关系阶段显示名自定义（v4.0.21）
     #
     # 键是**出厂默认阶段名**（初识期/深化期/承诺期/共生期/冷淡期/反感期/敌对期，
