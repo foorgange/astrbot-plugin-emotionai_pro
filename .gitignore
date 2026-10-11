@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 .workbuddy-ai/
 _emotionai_verify/
+_welcome_verify/
+_bay_deploy/
