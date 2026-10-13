@@ -32,7 +32,7 @@ from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
 from .global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
-    build_mood_change_reason, mood_trigger_excerpt,
+    build_mood_change_reason, mood_trigger_excerpt, describe_mood,
     MOOD_CACHE_TTL,
 )
 
@@ -45,7 +45,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.5")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.6")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -214,6 +214,7 @@ class EmotionAIProPlugin(Star):
             "enable_ai_text_generation": "enable_ai_text_generation",
             "global_privacy_level": "global_privacy_level",
             "enable_smart_update": "enable_smart_update",
+            "enable_mood_influence": "enable_mood_influence",
             "force_update_interval": "force_update_interval",
             "emotional_significance_threshold": "emotional_significance_threshold",
             "enable_secondary_llm": "enable_secondary_llm",
@@ -575,8 +576,8 @@ class EmotionAIProPlugin(Star):
                     subject=self._get_bot_name() or "",
                 )
                 if reason:
-                    mood.last_change_reason = reason
-                    mood.last_change_at = mood.updated_at
+                    # v4.1.6：同时刷新「最近一次」与「最近三次」历史
+                    mood.push_change_reason(reason, mood.updated_at)
             self._mood_cache = mood
             self._mood_cache_time = time.time()
             asyncio.create_task(self.global_mood_store.save(mood))
@@ -603,7 +604,7 @@ class EmotionAIProPlugin(Star):
         mood = self.get_mood_sync()
         emotion_intensity = mood.intensity
         dominant_emotion = mood.dominant_emotion
-        mood_label = self._get_mood_label(emotion_intensity)
+        mood_label = self._get_mood_label(emotion_intensity, dominant_emotion)
 
         # 更新状态的阶段信息
         state.relationship_stage = stage_info["stage_name"]
@@ -756,6 +757,10 @@ class EmotionAIProPlugin(Star):
 
         追加到用户消息之后时，system_prompt + 历史消息的前缀保持稳定，只有
         末尾新增的一小段会变化，缓存命中率可恢复至 80%+。
+
+        v4.1.6 起注入内容里的【当前心情】（全局实时心情）同样只走这条尾部
+        通道——心情几乎每轮都在变，但它与情感状态一样只影响末尾一小段，
+        不参与前缀，因此不影响缓存命中。
         """
         user_key = self._get_user_key(event)
 
@@ -1045,6 +1050,27 @@ class EmotionAIProPlugin(Star):
         attitude_line = (
             f"态度倾向：{state.descriptions.attitude}\n" if attitude_enabled else ""
         )
+
+        # 全局心情注入（v4.1.6）：让 bot 的实时心情也参与回复生成
+        # （此前心情只影响展示面板，模型完全感知不到）。
+        #
+        # ⚠️ 缓存友好：本节由调用方（inject_enhanced_context）随整段上下文
+        # 一起追加到 req.extra_user_content_parts——位于**当前用户消息之后**
+        # 的尾部，不碰 system_prompt 与 req.contexts。DeepSeek 等提供商的
+        # 「前缀缓存」（system_prompt + 历史消息）因此保持稳定，心情变化
+        # 只影响末尾一小段，缓存命中率不受影响。
+        mood = self.get_mood_sync()
+        mood_block = ""
+        if bool(getattr(self.config, "enable_mood_influence", True)):
+            mood_block = (
+                "【当前心情】\n"
+                f"主导情绪：{mood.dominant_emotion}"
+                f"（{self._get_mood_label(mood.intensity, mood.dominant_emotion)}）"
+                f"| 强度：{mood.intensity:.2f}/1\n"
+                "说明：这是你此刻真实的心情。请让它自然地影响你的语气、用词与"
+                "情绪表达，但不要主动向用户提起它，也不要因此改变你既有的身份"
+                "设定与说话风格。\n\n"
+            )
         return f"""
 【机密情感系统 - 主对话模式】
 以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，
@@ -1058,7 +1084,7 @@ class EmotionAIProPlugin(Star):
 关系阶段：{state.relationship_stage}
 {attitude_line}好感度：{state.favor} | 亲密度：{state.intimacy}
 
-【语气指导】
+{mood_block}【语气指导】
 {tone_instruction}
 
 【智能更新机制】
@@ -1093,18 +1119,16 @@ class EmotionAIProPlugin(Star):
         ]
         return round(max(emotions) / 100.0, 2) if emotions else 0.0
 
-    def _get_mood_label(self, intensity: float) -> str:
-        """根据情感强度（0~1）映射中文心情描述"""
-        if intensity < 0.15:
-            return "心情平静"
-        elif intensity < 0.35:
-            return "心情平稳"
-        elif intensity < 0.55:
-            return "心情微动"
-        elif intensity < 0.75:
-            return "心情波动"
-        else:
-            return "情绪高涨"
+    def _get_mood_label(self, intensity: float, dominant_emotion: str = "中立") -> str:
+        """根据主导情绪与情感强度（0~1）映射中文心情描述
+
+        v4.1.6 修复「愤怒（心情平静）」式自相矛盾展示：旧实现只看强度，
+        具体情绪弱一点就会被标成「心情平静」。现在具体情绪主导时返回该
+        情绪的分级口语描述（愤怒 0.11 → 「有点生气」），只有中立/复合/
+        未知主导才用「心情平静」这类整体心境词。真源在 global_mood
+        .describe_mood，展示与 LLM 注入共用。
+        """
+        return describe_mood(dominant_emotion, intensity)
     
     @filter.on_llm_response(priority=100000)
     async def process_smart_update(self, event: AstrMessageEvent, resp: LLMResponse):

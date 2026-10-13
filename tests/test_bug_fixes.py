@@ -248,7 +248,7 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
                 dominant_emotion="喜悦", intensity=1.0
             ),
             _sanitize_ai_text=lambda t: t,
-            _get_mood_label=lambda i: "情绪高涨",
+            _get_mood_label=lambda i, d="中立": "情绪高涨",
         )
 
         handler = AdminCommandHandler.__new__(AdminCommandHandler)

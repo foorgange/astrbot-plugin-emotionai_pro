@@ -244,7 +244,7 @@ class UserCommandHandler(BaseCommandHandler):
         event.stop_event()
 
     async def show_global_mood(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """查看 bot 当前全局心情与最近一次变化原因（v4.1.5 新增）"""
+        """查看 bot 当前全局心情与最近三次变化原因（v4.1.5 新增，v4.1.6 改三次）"""
         if self.config.global_privacy_level == PrivacyLevel.FULL_SECRET:
             yield event.plain_result("【当前心情】*保密*")
             event.stop_event()
@@ -253,7 +253,7 @@ class UserCommandHandler(BaseCommandHandler):
         # 时间衰减是惰性的（只在下次更新时生效），查询时按同一套规则
         # 做只读预览，避免展示明显高估的存档强度
         mood = preview_time_decayed(self.plugin.get_mood_sync())
-        mood_label = self.plugin._get_mood_label(mood.intensity)
+        mood_label = self.plugin._get_mood_label(mood.intensity, mood.dominant_emotion)
 
         lines = [
             "【当前心情】",
@@ -268,11 +268,21 @@ class UserCommandHandler(BaseCommandHandler):
             if silent >= MOOD_TIME_DECAY_UNIT:
                 lines.append(f"（已静默 {_format_duration(silent)}，心情正在自行平复）")
 
-        lines.extend(["", "【最近一次变化】"])
-        if mood.last_change_reason:
-            lines.append(mood.last_change_reason)
-            if mood.last_change_at > 0:
-                lines.append(f"（{_format_relative_time(mood.last_change_at)}）")
+        # 最近三次变化（v4.1.6）：新的在前。
+        # 旧存档（v4.1.5 及之前）只有单条 last_change_reason、没有
+        # mood_history，from_dict 会迁移成一条；这里再兜底一次，
+        # 保证任何来源的心情对象都能展示。
+        entries = [e for e in mood.mood_history if isinstance(e, dict)]
+        if not entries and mood.last_change_reason:
+            entries = [{"reason": mood.last_change_reason, "at": mood.last_change_at}]
+
+        lines.extend(["", "【最近三次变化】"])
+        if entries:
+            for i, entry in enumerate(entries, 1):
+                lines.append(f"{i}. {entry.get('reason', '')}")
+                at = entry.get("at", 0)
+                if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0:
+                    lines.append(f"   （{_format_relative_time(at)}）")
         else:
             lines.append("还没有值得记录的心情变化")
 
@@ -538,7 +548,7 @@ class AdminCommandHandler(BaseCommandHandler):
             f"态度: {attitude_display} | 关系: {relationship_display}",
             f"好感度: {state.favor} | 亲密度: {state.intimacy}",
             f"复合评分: {profile['composite_score']:.1f}",
-            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity)}) | 强度: {global_intensity:.2f}/1",
+            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity, global_dominant)}) | 强度: {global_intensity:.2f}/1",
             f"互动统计: {state.stats.total_count}次 (正面: {state.stats.positive_count}, 负面: {state.stats.negative_count})",
             f"最后互动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
             f"状态显示: {'开启' if state.show_status else '关闭'}",

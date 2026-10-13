@@ -225,6 +225,12 @@
     "default": true,
     "hint": "关闭后不再向主对话注入「态度倾向」描述（模型不再据此调整语气），但状态记录与 /查看好感 显示不受影响"
   },
+  "enable_mood_influence": {
+    "description": "启用心情影响回复",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 bot 的实时心情（喜怒哀伤等）会注入主对话，影响回复的语气与情绪表达；关闭后心情照常演进与展示，仅不注入 LLM。不会影响模型上下文缓存命中（注入位置在用户消息之后）"
+  },
   "enable_ai_text_generation": {
     "description": "启用 AI 自主生成文本描述",
     "type": "bool", 

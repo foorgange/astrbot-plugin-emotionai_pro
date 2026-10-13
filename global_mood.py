@@ -18,6 +18,9 @@ from .constants import PathConstants
 # 全局心情缓存 TTL（秒）
 MOOD_CACHE_TTL = 60
 
+# 「最近心情变化」历史保留条数（/心情 命令展示用，新的在前）
+MOOD_HISTORY_LIMIT = 3
+
 # 心情也随每条对话实时变化的轻量信号强度上限
 # （单维度净增量上限；多条消息叠加时由冲高机制放大，这里只限"一条消息"）
 MOOD_SIGNAL_CAP = 4
@@ -62,6 +65,10 @@ class GlobalMood:
     # 这类废话把真正的变化原因覆盖掉；旧存档没有这两个字段，默认空。
     last_change_reason: str = ""
     last_change_at: float = 0
+    # 最近若干次「可见」心情变化（/心情 命令展示最近三次，新的在前）。
+    # 每项为 {"reason": str, "at": float}；last_change_reason/last_change_at
+    # 恒等于 history[0]，作为「最近一次」的镜像保留（旧代码与旧存档依赖）。
+    mood_history: list = field(default_factory=list)
 
     def _recompute(self):
         """根据 8 维情绪重算强度与主导情感
@@ -77,6 +84,30 @@ class GlobalMood:
         )
         self.dominant_emotion = e.get_dominant()
 
+    def push_change_reason(self, reason: str, at: float) -> None:
+        """记录一条「可见」的心情变化（刷新最近一次 + 压入历史）
+
+        reason 为空/非字符串时忽略。历史最多保留 MOOD_HISTORY_LIMIT 条，
+        最新的在最前（/心情 命令按序展示）。与最新一条文本完全相同的
+        原因不重复压栈（同一句话引发的连续波动只留一条，只刷新时间），
+        避免「最近三次变化」里出现两条一模一样的记录。
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            return
+        ts = (
+            float(at)
+            if isinstance(at, (int, float)) and not isinstance(at, bool)
+            else 0.0
+        )
+        self.last_change_reason = reason
+        self.last_change_at = ts
+        history = [e for e in self.mood_history if isinstance(e, dict)]
+        if history and history[0].get("reason") == reason:
+            history[0] = {"reason": reason, "at": ts}
+        else:
+            history.insert(0, {"reason": reason, "at": ts})
+        self.mood_history = history[:MOOD_HISTORY_LIMIT]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "emotions": self.emotions.to_dict(),
@@ -85,6 +116,8 @@ class GlobalMood:
             "updated_at": self.updated_at,
             "last_change_reason": self.last_change_reason,
             "last_change_at": self.last_change_at,
+            # 深拷贝条目，避免调用方持有同一 dict 引用后互相影响
+            "mood_history": [dict(e) for e in self.mood_history if isinstance(e, dict)],
         }
 
     @classmethod
@@ -110,6 +143,29 @@ class GlobalMood:
             if isinstance(changed_at, (int, float)) and not isinstance(changed_at, bool)
             else 0
         )
+        # v4.1.5 之前的旧存档只有单条 last_change_reason，没有 mood_history：
+        # 把那条迁移成历史首条，/心情 的「最近三次变化」对老用户同样有内容
+        history = data.get("mood_history", [])
+        if isinstance(history, list):
+            parsed = []
+            for item in history[:MOOD_HISTORY_LIMIT]:
+                if not isinstance(item, dict):
+                    continue
+                r = item.get("reason", "")
+                if not isinstance(r, str) or not r.strip():
+                    continue
+                t = item.get("at", 0)
+                parsed.append({
+                    "reason": r,
+                    "at": float(t)
+                    if isinstance(t, (int, float)) and not isinstance(t, bool)
+                    else 0.0,
+                })
+            mood.mood_history = parsed
+        if not mood.mood_history and mood.last_change_reason:
+            mood.mood_history = [
+                {"reason": mood.last_change_reason, "at": mood.last_change_at}
+            ]
         return mood
 
     @staticmethod
@@ -498,6 +554,9 @@ def preview_time_decayed(mood: GlobalMood) -> GlobalMood:
     preview.updated_at = mood.updated_at
     preview.last_change_reason = mood.last_change_reason
     preview.last_change_at = mood.last_change_at
+    preview.mood_history = [
+        dict(e) for e in mood.mood_history if isinstance(e, dict)
+    ]
     return preview
 
 
@@ -513,6 +572,49 @@ _MOOD_CHANGE_PHRASES = {
     "恐惧": "慌张起来",
     "中立": "平静起来",
 }
+
+# 主导情绪 → 强度分级口语描述（v4.1.6）
+#
+# 旧展示只有强度一维：「愤怒（心情平静）」——主导情绪与标签自相矛盾
+# （都愤怒了还说什么心情平静）。现在具体情绪主导时，标签就是该情绪
+# 本身按强度的分级描述；只有「中立」主导（8 维全零、没有任何情绪
+# 冒头）或复合/未知名称，才用「心情平静」这类整体心境词。
+_MOOD_EMOTION_GRADES: Dict[str, tuple] = {
+    #                <0.15     <0.35     <0.55     <0.75      ≥0.75
+    "喜悦": ("有点开心", "挺开心", "很开心", "特别开心", "兴高采烈"),
+    "信任": ("有点安心", "挺安心", "很安心", "特别安心", "全心信赖"),
+    "期待": ("有点期待", "挺期待", "很期待", "特别期待", "期待不已"),
+    "惊讶": ("有点惊讶", "挺惊讶", "很惊讶", "非常惊讶", "大吃一惊"),
+    "悲伤": ("有点低落", "挺难过", "很难过", "特别难过", "伤心透了"),
+    "厌恶": ("有点嫌弃", "挺嫌弃", "很嫌弃", "非常嫌弃", "嫌弃至极"),
+    "愤怒": ("有点生气", "挺恼火", "很生气", "非常生气", "气炸了"),
+    "恐惧": ("有点慌", "挺不安", "很慌张", "非常慌张", "害怕极了"),
+}
+
+# 中立/复合/未知主导时的整体心境词（强度分档阈值与分级表一致）
+_MOOD_NEUTRAL_GRADES = ("心情平静", "心情平稳", "心情微动", "心情波动", "情绪高涨")
+
+
+def describe_mood(dominant_emotion: str, intensity: float) -> str:
+    """主导情绪 + 强度（0~1）→ 中文心情描述
+
+    展示（/心情、/查看好感、情感状态面板）与 LLM 注入共用这一份真源，
+    保证用户看到的描述和模型收到的心情指引是同一套措辞。
+    """
+    grades = _MOOD_EMOTION_GRADES.get(dominant_emotion or "") or _MOOD_NEUTRAL_GRADES
+    try:
+        value = float(intensity)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 0.15:
+        return grades[0]
+    if value < 0.35:
+        return grades[1]
+    if value < 0.55:
+        return grades[2]
+    if value < 0.75:
+        return grades[3]
+    return grades[4]
 
 
 def build_mood_change_reason(

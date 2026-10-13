@@ -91,6 +91,9 @@ class PluginConfig(BaseModel):
     admin_qq_list: List[str] = Field(default_factory=list, description="管理员QQ号列表")
     plugin_priority: int = Field(default=100000, ge=1, le=1000000, description="插件处理优先级")
     enable_attitude_system: bool = Field(default=True, description="启用态度关系系统")
+    # 全局心情是否参与主对话回复生成（v4.1.6）。关闭后心情仍正常演进与
+    # 展示（/心情、/查看好感），只是不再注入 LLM 请求。
+    enable_mood_influence: bool = Field(default=True, description="启用心情影响回复")
     enable_ai_text_generation: bool = Field(default=True, description="启用AI自主生成文本描述")
     global_privacy_level: PrivacyLevel = Field(default=PrivacyLevel.BASIC, description="全局隐私级别")
     enable_smart_update: bool = Field(default=True, description="启用智能更新机制")

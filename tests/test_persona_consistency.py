@@ -54,6 +54,11 @@ def make_plugin(bot_name=None, relationship_context=CLEAN_RELATIONSHIP, tone=CLE
 
     plugin.analyzer = MagicMock()
     plugin.analyzer.get_dominant_emotion = MagicMock(return_value="喜悦")
+
+    # v4.1.6 起 _build_enhanced_context 会读取全局心情（/查看好感 同一口径），
+    # 这里给一个中立默认心情，保证旧断言聚焦在人设一致性上
+    from emotionai_pro.global_mood import GlobalMood
+    plugin.get_mood_sync = lambda: GlobalMood.default()
     return plugin
 
 
