@@ -33,6 +33,7 @@ from .attitude_manager import AttitudeRelationshipManager
 from .global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
     build_mood_change_reason, mood_trigger_excerpt, describe_mood,
+    expert_mood_trigger,
     MOOD_CACHE_TTL,
 )
 from .image_format_guard import filter_image_urls, filter_unsupported_image_parts
@@ -46,7 +47,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.7")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.8")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -142,6 +143,8 @@ class EmotionAIProPlugin(Star):
             intimacy_change_min=self.config.intimacy_change_min,
             intimacy_change_max=self.config.intimacy_change_max,
             enable_ai_text_generation=self.config.enable_ai_text_generation,
+            # v4.1.8：心情变化原因是否由大模型生成（关闭走内置文案兜底）
+            enable_llm_mood_reason=self.config.enable_llm_mood_reason,
         )
 
         # 命令处理器
@@ -216,6 +219,7 @@ class EmotionAIProPlugin(Star):
             "global_privacy_level": "global_privacy_level",
             "enable_smart_update": "enable_smart_update",
             "enable_mood_influence": "enable_mood_influence",
+            "enable_llm_mood_reason": "enable_llm_mood_reason",
             "force_update_interval": "force_update_interval",
             "emotional_significance_threshold": "emotional_significance_threshold",
             "enable_secondary_llm": "enable_secondary_llm",
@@ -556,7 +560,7 @@ class EmotionAIProPlugin(Star):
         asyncio.create_task(self._mood_refresh_async())
         return GlobalMood.default()
 
-    def _update_global_mood(self, updates: Dict[str, Any], allow_spike: bool = True, trigger: str = ""):
+    def _update_global_mood(self, updates: Dict[str, Any], allow_spike: bool = True, trigger: str = "", llm_reason: str = ""):
         """演进全局心情（仅情感维度）
 
         allow_spike=True：关键词/语气实时信号，可触发情绪冲高（默认）；
@@ -565,6 +569,10 @@ class EmotionAIProPlugin(Star):
         trigger：触发来源描述（如 听到「哈哈」），非空时尝试刷新
         「最近一次心情变化原因」（/心情 命令展示）；不可见的小波动
         （主导未翻转且强度变化 <0.05）不覆盖上一条有记录的原因。
+        llm_reason（v4.1.8）：专家通道拿到的大模型生成原因，非空时
+        优先于内置模板；为空（开关关闭 / LLM 不可用 / 模型没返回）
+        时走内置多套模板轮换兜底。可见性门槛由
+        build_mood_change_reason 统一把守，两条路一致。
         """
         try:
             mood = self.get_mood_sync()
@@ -575,6 +583,7 @@ class EmotionAIProPlugin(Star):
                 reason = build_mood_change_reason(
                     before_dominant, before_intensity, mood, trigger,
                     subject=self._get_bot_name() or "",
+                    llm_reason=llm_reason if isinstance(llm_reason, str) else "",
                 )
                 if reason:
                     # v4.1.6：同时刷新「最近一次」与「最近三次」历史
@@ -1330,8 +1339,15 @@ class EmotionAIProPlugin(Star):
                 logger.info(f"[DEBUG] 应用专家更新: {expert_updates}")
 
                 # 专家更新叠加到全局心情演进（温和通道：不与实时信号重复计分）
+                #
+                # v4.1.8：变化原因优先用大模型生成的自然语句（可由
+                # 「启用大模型生成心情变化原因」开关关闭），拿不到就走
+                # 内置多套模板兜底；触发语按时间戳在多套同义表达间轮换，
+                # 避免同一句刷满 /心情 的「最近三次变化」。
                 self._update_global_mood(
-                    expert_updates, allow_spike=False, trigger="回味刚才的对话",
+                    expert_updates, allow_spike=False,
+                    trigger=expert_mood_trigger(time.time()),
+                    llm_reason=expert_updates.get("mood_reason", ""),
                 )
             else:
                 logger.warning(f"[DEBUG] 情感分析返回空结果")

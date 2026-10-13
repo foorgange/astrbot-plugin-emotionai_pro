@@ -55,6 +55,8 @@ class ConfigValidator:
             "enable_attitude_system": {"type": "boolean"},
             # v4.1.6：全局心情是否参与主对话回复生成
             "enable_mood_influence": {"type": "boolean"},
+            # v4.1.8：心情变化原因是否由大模型生成（关闭走内置文案兜底）
+            "enable_llm_mood_reason": {"type": "boolean"},
             # v4.1.7：图片格式守卫（拦截 SVG 等不支持的格式，避免
             # provider 连环报错导致回复变慢）
             "image_format_filter_enabled": {"type": "boolean"},
@@ -153,6 +155,7 @@ class ConfigValidator:
             "plugin_priority": 100000,
             "enable_attitude_system": True,
             "enable_mood_influence": True,
+            "enable_llm_mood_reason": True,
             "image_format_filter_enabled": True,
             "enable_ai_text_generation": True,
             "global_privacy_level": 1,

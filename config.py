@@ -94,6 +94,11 @@ class PluginConfig(BaseModel):
     # 全局心情是否参与主对话回复生成（v4.1.6）。关闭后心情仍正常演进与
     # 展示（/心情、/查看好感），只是不再注入 LLM 请求。
     enable_mood_influence: bool = Field(default=True, description="启用心情影响回复")
+    # 心情变化原因是否由大模型生成（v4.1.8）。开启时 /心情 展示的
+    # 「最近三次变化」优先使用情感分析模型生成的自然语句（人设口吻、
+    # ≤20 字）；关闭、LLM 不可用或模型没返回时，自动用内置多套固定
+    # 文案轮换兜底——两种情况下原因都不会缺席，也不会同一句刷屏。
+    enable_llm_mood_reason: bool = Field(default=True, description="启用大模型生成心情变化原因")
     # 图片格式守卫（v4.1.7）。群里出现 SVG 等非通用格式图片时，框架会
     # 原样注入请求：主模型 400（Cannot decode visions）→ fallback 商汤系
     # 再 400（invalid image base64）→ 连切多个 provider 才被链尾兜住，

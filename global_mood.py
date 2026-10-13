@@ -21,6 +21,18 @@ MOOD_CACHE_TTL = 60
 # 「最近心情变化」历史保留条数（/心情 命令展示用，新的在前）
 MOOD_HISTORY_LIMIT = 3
 
+# 同文本去重窗口（秒，v4.1.8）
+#
+# 同一条原因在窗口内重复上报，视为同一事件的双报（实时信号与专家
+# 通道描述同一轮对话时各报一次），只刷新时间戳、不新增条目；超出
+# 窗口的重复是又一次真实发生，照常压栈。
+#
+# ⚠️ 此前是「同文本永久合并」：专家通道触发语固定、回落分支又是
+# 固定模板，于是同一句话被无限合并——线上实测「最近三次变化」
+# 永远只有一条（用户报 bug）。现在重复能否进历史由时间判定，
+# 不再由文本判定。
+MOOD_HISTORY_DEDUP_WINDOW = 120.0
+
 # 心情也随每条对话实时变化的轻量信号强度上限
 # （单维度净增量上限；多条消息叠加时由冲高机制放大，这里只限"一条消息"）
 MOOD_SIGNAL_CAP = 4
@@ -88,9 +100,12 @@ class GlobalMood:
         """记录一条「可见」的心情变化（刷新最近一次 + 压入历史）
 
         reason 为空/非字符串时忽略。历史最多保留 MOOD_HISTORY_LIMIT 条，
-        最新的在最前（/心情 命令按序展示）。与最新一条文本完全相同的
-        原因不重复压栈（同一句话引发的连续波动只留一条，只刷新时间），
-        避免「最近三次变化」里出现两条一模一样的记录。
+        最新的在最前（/心情 命令按序展示）。
+
+        与最新一条文本相同、且距其发生不足 MOOD_HISTORY_DEDUP_WINDOW
+        秒的重复上报只刷新时间戳（同一事件被两个通道各报一次的双报）；
+        超出窗口的重复是又一次真实发生，照常压栈——「最近三次变化」
+        必须能累积，不能被同一句话无限合并（v4.1.8）。
         """
         if not isinstance(reason, str) or not reason.strip():
             return
@@ -102,7 +117,18 @@ class GlobalMood:
         self.last_change_reason = reason
         self.last_change_at = ts
         history = [e for e in self.mood_history if isinstance(e, dict)]
-        if history and history[0].get("reason") == reason:
+        latest = history[0] if history else None
+        latest_at = latest.get("at") if isinstance(latest, dict) else None
+        double_report = (
+            isinstance(latest, dict)
+            and latest.get("reason") == reason
+            and ts > 0
+            and isinstance(latest_at, (int, float))
+            and not isinstance(latest_at, bool)
+            and ts - float(latest_at) < MOOD_HISTORY_DEDUP_WINDOW
+        )
+        if double_report:
+            # 同一事件的重复上报：只刷新时间戳，不占历史条数
             history[0] = {"reason": reason, "at": ts}
         else:
             history.insert(0, {"reason": reason, "at": ts})
@@ -573,6 +599,22 @@ _MOOD_CHANGE_PHRASES = {
     "中立": "平静起来",
 }
 
+# 强度回落时「什么淡了下来」的具体描述（v4.1.8）
+#
+# 回落分支过去只有一句固定的「心情渐渐平复」：专家通道几乎每轮都
+# 走这条，文本一字不差，/心情 历史被同一句话刷屏。现在除通用说法
+# 外，再按主导情绪给出具体描述，与通用说法一起按种子轮换。
+_MOOD_CALM_PHRASES: Dict[str, str] = {
+    "喜悦": "那股高兴劲儿慢慢淡了下来",
+    "信任": "心里的踏实感渐渐淡了",
+    "期待": "期待感慢慢退了下去",
+    "惊讶": "那股惊讶劲儿过去了",
+    "悲伤": "难过渐渐散了一些",
+    "厌恶": "嫌弃淡了一些",
+    "愤怒": "火气慢慢降了下来",
+    "恐惧": "慌张渐渐退了",
+}
+
 # 主导情绪 → 强度分级口语描述（v4.1.6）
 #
 # 旧展示只有强度一维：「愤怒（心情平静）」——主导情绪与标签自相矛盾
@@ -623,6 +665,8 @@ def build_mood_change_reason(
     after: GlobalMood,
     trigger: str,
     subject: str = "",
+    variant_seed: Optional[int] = None,
+    llm_reason: str = "",
 ) -> Optional[str]:
     """根据一次心情更新生成「最近一次变化原因」描述
 
@@ -634,6 +678,15 @@ def build_mood_change_reason(
 
     trigger：触发来源（如 听到「哈哈」）；subject：bot 人设名，
     为空时用「心情」作主语，保证句子完整。
+
+    llm_reason（v4.1.8）：调用方（专家通道）拿到的大模型生成原因。
+    非空时优先返回它——比模板更贴本轮对话；为空（开关关闭、LLM
+    不可用、模型没返回该字段）时走内置模板兜底。可见性门槛对两条
+    路一视同仁：不可见的变化不生成任何原因。
+
+    variant_seed：模板轮换种子，None 时取 8 维情绪之和
+    （mood_variant_seed）——每次更新都会改变这个和，同一分支
+    因此不会连续输出同一句话。
     """
     flipped = after.dominant_emotion != before_dominant
     delta = after.intensity - before_intensity
@@ -641,11 +694,72 @@ def build_mood_change_reason(
         return None
 
     who = subject if subject else "心情"
+    if isinstance(llm_reason, str) and llm_reason.strip():
+        return llm_reason.strip()
+    if variant_seed is None:
+        variant_seed = mood_variant_seed(after)
+    try:
+        seed = int(variant_seed)
+    except (TypeError, ValueError):
+        seed = 0
     if delta < 0 and not flipped:
         # 强度回落多半是逐轮衰减/时间衰减主导，别把账算到触发消息头上
-        return f"{trigger}之后，{who}的心情渐渐平复"
+        templates = [
+            f"{trigger}之后，{who}的心情渐渐平复",
+            f"{trigger}之后，{who}的情绪慢慢缓和下来",
+        ]
+        calm = _MOOD_CALM_PHRASES.get(after.dominant_emotion)
+        if calm:
+            templates.append(f"{trigger}之后，{who}{calm}")
+        return templates[seed % len(templates)]
     phrase = _MOOD_CHANGE_PHRASES.get(after.dominant_emotion, "有所波动")
-    return f"因为{trigger}，{who}变得{phrase}"
+    templates = [
+        f"因为{trigger}，{who}变得{phrase}",
+        f"{trigger}让{who}{phrase}",
+        f"{trigger}之后，{who}也跟着{phrase}",
+    ]
+    return templates[seed % len(templates)]
+
+
+# 专家通道（LLM 后台慢思考）的触发语候选（v4.1.8）
+#
+# 触发语固定一句时，回落分支的输出永远一模一样；换成多套同义表达
+# 按种子轮换后，同样的「平复」也有不同的说法。
+_EXPERT_MOOD_TRIGGERS = (
+    "回味刚才的对话",
+    "想了想刚才聊的内容",
+    "回想起刚才的对话",
+    "琢磨起刚才说过的话",
+)
+
+
+def expert_mood_trigger(seed: float) -> str:
+    """专家通道触发语：按种子在同义表达间轮换（v4.1.8）
+
+    seed 传当前时间戳即可——相邻两轮专家评估相隔数秒，轮换自然
+    展开；万一同一秒内连评两次，也还有模板轮换（另一个种子）兜底，
+    不会输出一模一样的文本。
+    """
+    try:
+        idx = int(float(seed)) % len(_EXPERT_MOOD_TRIGGERS)
+    except (TypeError, ValueError):
+        idx = 0
+    return _EXPERT_MOOD_TRIGGERS[idx]
+
+
+def mood_variant_seed(mood: GlobalMood) -> int:
+    """变化原因模板轮换种子：8 维情绪值之和（v4.1.8）
+
+    每次心情更新都会改变这个和（衰减 / 叠加 / 对冲轮番作用），因此
+    同一分支的句子不会连续撞同一套模板；和不变时模板才可能重复，
+    而那通常意味着心情确实没有变化（此时根本不会生成原因）。
+    """
+    try:
+        return sum(
+            int(getattr(mood.emotions, k, 0) or 0) for k in MOOD_EMOTION_KEYS
+        )
+    except (TypeError, ValueError):
+        return 0
 
 
 def mood_trigger_excerpt(text: str, limit: int = 12) -> str:

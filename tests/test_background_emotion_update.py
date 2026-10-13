@@ -119,7 +119,7 @@ class Harness:
         plugin._get_message_text = lambda ev: "你好喵"
         plugin._apply_expert_updates = lambda st, up: self.applied.append(up)
         plugin._calculate_emotional_significance = lambda up: 5
-        plugin._update_global_mood = lambda updates, allow_spike=True, trigger="": self.mood_updates.append(updates)
+        plugin._update_global_mood = lambda updates, allow_spike=True, trigger="", llm_reason="": self.mood_updates.append(updates)
         plugin._format_emotional_state = lambda st: "【状态】"
         plugin._sanitize_ai_text = lambda t: t
 

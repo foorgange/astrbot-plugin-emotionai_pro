@@ -334,7 +334,11 @@ class TestMoodChangeReasonV415(unittest.TestCase):
         )
 
     def test_reason_on_intensity_drop(self):
-        """强度大幅回落（未翻转）→ 心情渐渐平复描述（不归因于触发消息）"""
+        """强度大幅回落（未翻转）→ 平复类描述（不归因于触发消息）
+
+        v4.1.8 起回落分支有多套模板按种子轮换，断言落在措辞集合上，
+        不再钉死某一固定句。
+        """
         mood = GlobalMood(emotions=EmotionalMetrics(joy=80))
         mood._recompute()
         before_dom, before_int = mood.dominant_emotion, mood.intensity
@@ -344,8 +348,14 @@ class TestMoodChangeReasonV415(unittest.TestCase):
         reason = build_mood_change_reason(
             before_dom, before_int, mood, "听到「喵」", subject="永雏塔菲",
         )
-        self.assertIn("心情渐渐平复", reason)
+        self.assertIsNotNone(reason)
+        self.assertIn("永雏塔菲", reason)
+        self.assertIn("听到「喵」", reason)
         self.assertNotIn("因为", reason)  # 不把回落算到触发消息头上
+        self.assertTrue(
+            any(k in reason for k in ("心情渐渐平复", "情绪慢慢缓和下来", "淡了下来")),
+            f"回落描述应为平复类措辞之一，实际: {reason}",
+        )
 
     def test_reason_persistence_roundtrip(self):
         """last_change_reason/last_change_at 随 to_dict/from_dict 往返"""

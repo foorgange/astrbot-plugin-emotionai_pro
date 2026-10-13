@@ -18,7 +18,7 @@ import tests.astrbot_stub  # noqa: F401  (注入 astrbot stub)
 import tests.bootstrap  # noqa: F401
 
 from emotionai_pro.global_mood import (  # noqa: E402
-    GlobalMood, describe_mood, MOOD_HISTORY_LIMIT,
+    GlobalMood, describe_mood, MOOD_HISTORY_LIMIT, MOOD_HISTORY_DEDUP_WINDOW,
     _MOOD_EMOTION_GRADES, _MOOD_NEUTRAL_GRADES,
     preview_time_decayed,
 )
@@ -283,14 +283,39 @@ class TestMoodHistory(unittest.TestCase):
         self.assertEqual(mood.last_change_reason, "第四次")
         self.assertEqual(mood.last_change_at, 400.0)
 
-    def test_same_text_refreshes_timestamp_only(self):
-        """同一句话的连续波动不重复压栈（避免三次列表出现两条一样记录）"""
+    def test_same_text_within_window_refreshes_timestamp_only(self):
+        """同一事件的双报（窗口内同文本）只刷新时间戳，不占历史条数"""
         mood = GlobalMood()
         mood.push_change_reason("因为听到「哈哈」，永雏塔菲变得开心起来", 100.0)
         mood.push_change_reason("因为听到「哈哈」，永雏塔菲变得开心起来", 200.0)
         self.assertEqual(len(mood.mood_history), 1)
         self.assertEqual(mood.mood_history[0]["at"], 200.0)
         self.assertEqual(mood.last_change_at, 200.0)
+
+    def test_same_text_beyond_window_pushes_new_entry(self):
+        """线上 bug：同文本超出窗口是又一次真实发生，必须进历史
+
+        专家通道触发语固定 + 回落模板固定时，同一句话会反复出现；
+        旧实现永久合并它们，「最近三次变化」永远只有一条。
+        """
+        mood = GlobalMood()
+        first = 100.0
+        second = first + MOOD_HISTORY_DEDUP_WINDOW + 60
+        mood.push_change_reason("回味刚才的对话之后，永雏塔菲的心情渐渐平复", first)
+        mood.push_change_reason("回味刚才的对话之后，永雏塔菲的心情渐渐平复", second)
+        self.assertEqual(len(mood.mood_history), 2)
+        self.assertEqual(mood.mood_history[0]["at"], second)
+        self.assertEqual(mood.mood_history[1]["at"], first)
+        self.assertEqual(
+            mood.last_change_reason, "回味刚才的对话之后，永雏塔菲的心情渐渐平复"
+        )
+
+    def test_unknown_timestamp_treated_as_new_entry(self):
+        """at=0（未知时间）无法判定窗口 → 视为新条目，不与上一条合并"""
+        mood = GlobalMood()
+        mood.push_change_reason("同一条原因", 0.0)
+        mood.push_change_reason("同一条原因", 0.0)
+        self.assertEqual(len(mood.mood_history), 2)
 
     def test_push_ignores_empty_and_non_str(self):
         mood = GlobalMood()

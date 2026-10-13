@@ -25,7 +25,8 @@ class EmotionAnalysisExpert:
                  max_providers: int = 3, change_min: int = -10,
                  change_max: int = 5, intimacy_change_min: int = -3,
                  intimacy_change_max: int = 3,
-                 enable_ai_text_generation: bool = True):
+                 enable_ai_text_generation: bool = True,
+                 enable_llm_mood_reason: bool = True):
         self.cache = cache
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
@@ -62,6 +63,10 @@ class EmotionAnalysisExpert:
         )
         # 是否允许 LLM 生成态度/关系描述文本；关闭时走本地兜底文案
         self.enable_ai_text_generation = bool(enable_ai_text_generation)
+        # 是否让 LLM 生成「心情变化原因」（v4.1.8，/心情 命令展示）。
+        # 关闭、LLM 不可用或模型没返回该字段时，上游自动走内置多套
+        # 固定文案轮换兜底——不会没有原因可展示，也不会同一句刷屏。
+        self.enable_llm_mood_reason = bool(enable_llm_mood_reason)
 
         # 情感分析的总时间预算（秒）：预算耗尽即放弃 LLM 分析，走本地 smart_fallback。
         # 预算内按备选链依次尝试，最多 max_providers 个 provider。
@@ -737,6 +742,12 @@ class EmotionAnalysisExpert:
 - 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
 - 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样
 
+【心情变化描述要求】（对应输出字段 mood_reason）
+- 用不超过 20 个字，描述 {bot_name} 此刻的心情变化，像随口一说
+- 只写心情本身（如「被夸了一句，有点开心」「被凶了，火气上来了」），不要写好感度、亲密度或双方关系
+- 语气自然，禁止条目符号、禁止分析过程、禁止出现 JSON 等字样
+- 本轮没有值得一说的心情变化时，输出空字符串 ""
+
 【输出格式】
 请输出严格的JSON格式：
 {{
@@ -753,12 +764,14 @@ class EmotionAnalysisExpert:
     "anticipation": 整数变化值
   }},
   "relationship": "关系描述（不超过20字）",
-  "attitude": "态度描述（不超过20字）"
+  "attitude": "态度描述（不超过20字）",
+  "mood_reason": "心情变化描述（不超过20字，无变化则空字符串）"
 }}
 
 注意：
 - 如果对话情感不明显，可以设置部分值为0。
-- relationship 和 attitude 必须简短（不超过20个字），禁止使用长句和标点堆砌。"""
+- relationship 和 attitude 必须简短（不超过20个字），禁止使用长句和标点堆砌。
+- mood_reason 可以是空字符串，不要为了填满而编造。"""
 
     def _parse_emotion_analysis(self, analysis_text: str, current_state: EnhancedEmotionalState) -> Dict[str, Any]:
         """解析情感分析结果 - 增强版本"""
@@ -839,6 +852,19 @@ class EmotionAnalysisExpert:
                     updates['relationship_text'] = current_state.descriptions.relationship
                     updates['attitude_text'] = current_state.descriptions.attitude
                 
+                # 心情变化原因（v4.1.8，可选字段 mood_reason）
+                #
+                # LLM 用自然语句描述 bot 此刻的心情变化，供 /心情 的
+                # 「最近三次变化」使用。字段缺失 / 非字符串 / 开关关闭时
+                # 都不写这个键——上游见空值会自动走内置多套固定文案
+                # 轮换兜底，行为与开关打开且模型正常返回时一致可预期。
+                if self.enable_llm_mood_reason:
+                    raw_reason = data.get("mood_reason")
+                    if isinstance(raw_reason, str):
+                        cleaned = self._sanitize_mood_reason(raw_reason)
+                        if cleaned:
+                            updates["mood_reason"] = cleaned
+
                 logger.info(f"成功解析JSON情感分析结果，包含 {len(updates)} 个更新")
                 return updates
                 
@@ -852,6 +878,20 @@ class EmotionAnalysisExpert:
         # JSON解析失败，尝试从文本提取
         logger.error("JSON解析失败，尝试文本提取")
         return self._extract_updates_from_text(analysis_text)
+
+    @staticmethod
+    def _sanitize_mood_reason(text: str, limit: int = 24) -> str:
+        """清洗 LLM 生成的心情变化原因：压空白、剥壳、截断（v4.1.8）
+
+        原因会随心情存档持久化并可能被 /心情 命令展示，必须短而干净：
+        模型偶尔会带上引号、方括号或换行；超长的一律截断加省略号
+        （提示词要求 ≤20 字，这里留一点余量，截到 24）。
+        """
+        cleaned = " ".join(str(text).split())
+        cleaned = cleaned.strip("\"'`[]【】「」 \t")
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit] + "…"
+        return cleaned
 
     def _clean_json_response(self, text: str) -> str:
         """清理JSON响应"""
