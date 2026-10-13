@@ -47,7 +47,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.8")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.9")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -220,6 +220,7 @@ class EmotionAIProPlugin(Star):
             "enable_smart_update": "enable_smart_update",
             "enable_mood_influence": "enable_mood_influence",
             "enable_llm_mood_reason": "enable_llm_mood_reason",
+            "image_format_filter_enabled": "image_format_filter_enabled",
             "force_update_interval": "force_update_interval",
             "emotional_significance_threshold": "emotional_significance_threshold",
             "enable_secondary_llm": "enable_secondary_llm",

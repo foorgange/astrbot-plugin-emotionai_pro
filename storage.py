@@ -425,7 +425,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.1.8'
+            'plugin_version': '4.1.9'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'

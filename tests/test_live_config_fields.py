@@ -34,6 +34,7 @@ from emotionai_pro.config import PluginConfig  # noqa: E402
 from emotionai_pro.config_manager import ConfigManager  # noqa: E402
 from emotionai_pro.emotion_expert import EmotionAnalysisExpert  # noqa: E402
 from emotionai_pro.memory import EnhancedMemorySystem  # noqa: E402
+from emotionai_pro.main import EmotionAIProPlugin  # noqa: E402
 
 
 class _FakeCache:
@@ -474,6 +475,31 @@ class TestPluginWiresTheFields(unittest.TestCase):
     def test_main_reads_attitude_switch(self):
         src = self._src("main.py")
         self.assertIn('getattr(self.config, "enable_attitude_system"', src)
+
+    def test_image_format_filter_switch_is_wired(self):
+        """v4.1.9：图片格式守卫开关必须在 base_mapping 里。
+
+        v4.1.7 引入开关时漏了白名单，WebUI 里改了 value 进不了 self.config，
+        getattr 永远拿默认 True —— 开关形同虚设。用源码级断言防再犯。
+        """
+        src = self._src("main.py")
+        self.assertIn('"image_format_filter_enabled": "image_format_filter_enabled"', src,
+                      "base_mapping 白名单漏了 image_format_filter_enabled（开关关不掉的根因）")
+
+    def test_image_format_filter_value_reaches_plugin_config(self):
+        """行为级：WebUI 里把开关关掉，值必须真的流进 self.config。
+
+        只断 base_mapping 文本不够——真跑一遍 _load_and_validate_config，
+        证明 False 能穿过 raw_config → config_dict → PluginConfig 全链路。
+        """
+        plugin = type("P", (), {"_raw_config": None})()
+        cfg = EmotionAIProPlugin._load_and_validate_config(
+            plugin, {"image_format_filter_enabled": False})
+        self.assertFalse(cfg.image_format_filter_enabled,
+                         "WebUI 关闭开关后插件配置仍是 True（白名单没接通）")
+        cfg_default = EmotionAIProPlugin._load_and_validate_config(plugin, {})
+        self.assertTrue(cfg_default.image_format_filter_enabled,
+                        "缺省时过滤应保持开启")
 
     def test_memory_uses_instance_threshold(self):
         src = self._src("memory.py")
