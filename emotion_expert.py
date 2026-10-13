@@ -1,8 +1,10 @@
 # emotion_expert.py
 import re
 import json
+import time
 import random
 import asyncio
+import inspect
 from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import asdict
 import hashlib
@@ -18,6 +20,16 @@ class EmotionAnalysisExpert:
 
     # 单次尝试的最低时间片：剩余预算低于此值就不再发起新的尝试
     MIN_SLICE = 3.0
+
+    # 断路器禁用后的冷却时间（秒）。
+    #
+    # 旧实现在 `_llm_failures >= 3` 时把 `_llm_available` 置 False，而
+    # `reset_llm_availability()` 全仓库没有任何调用方 —— 一旦禁用，后续所有
+    # 情感分析都会直接降级到 smart_fallback，**即使上游 429 限流早已消退**
+    # （2026-10-13 线上实锤：23:45:00 触发禁用后再无一条 llm_analysis）。
+    # 现在禁用只是「冷却」：期满后自动恢复一次探测，若再连续失败 3 次则
+    # 重新进入冷却，最坏也是每 10 分钟损失 3 轮分析，而非永久降级。
+    LLM_CIRCUIT_COOLDOWN_SECONDS = 600.0
 
     def __init__(self, cache: ShardedTTLCache, context=None,
                  secondary_llm_provider: str = None, secondary_llm_model: str = None,
@@ -37,6 +49,11 @@ class EmotionAnalysisExpert:
         self.llm_retry_delay = 1.0
         self._llm_available = True  # 跟踪LLM可用性
         self._llm_failures = 0  # 连续失败次数
+        # 断路器禁用时刻（unix 秒，0.0 = 未禁用）；配合 _maybe_reenable_llm
+        self._llm_disabled_at = 0.0
+        # text_chat 是否接受 request_max_retries 的检测结果按类缓存，
+        # 避免每轮情感分析都做一次 inspect.signature
+        self._fast_fail_support_cache: Dict[type, bool] = {}
 
         # 单次情感变化幅度（v4.0.20 修正）
         #
@@ -134,6 +151,8 @@ class EmotionAnalysisExpert:
         # 主要分析流程
         analysis_result = None
         try:
+            # 断路器冷却期满后自动恢复探测（旧逻辑一旦禁用永不恢复）
+            self._maybe_reenable_llm()
             # 首先尝试使用真正的LLM分析
             if self._llm_available:
                 analysis_result = await self._call_real_llm_with_retry(user_message, ai_response, current_state, umo)
@@ -154,7 +173,11 @@ class EmotionAnalysisExpert:
                 # 如果连续失败超过3次，暂时禁用LLM
                 if self._llm_failures >= 3:
                     self._llm_available = False
-                    logger.error("LLM连续失败3次，暂时禁用LLM分析")
+                    self._llm_disabled_at = time.time()
+                    logger.error(
+                        "LLM连续失败3次，暂时禁用LLM分析"
+                        f"（{self.LLM_CIRCUIT_COOLDOWN_SECONDS:.0f}秒后自动恢复探测）"
+                    )
                 
                 # 使用智能后备方案
                 updates = self._generate_smart_fallback(user_message, ai_response, current_state)
@@ -519,8 +542,16 @@ class EmotionAnalysisExpert:
             # 尝试调用text_chat方法（异步）
             if hasattr(provider, 'text_chat') and asyncio.iscoroutinefunction(provider.text_chat):
                 logger.info(f"调用 {provider_name}.text_chat()")
+                call_kwargs: Dict[str, Any] = {"model": self._target_model()}
+                if self._text_chat_supports_fast_fail(provider):
+                    # 429 快速失败：不让框架的 tenacity 外层做 5 次指数退避
+                    # （累计 ~15s，正好烧满备选链分给本 provider 的时间片，
+                    # 而 rpm 窗口不可能在秒级恢复）。备选链本身就是跨
+                    # provider 的重试策略，这里只保留 SDK 自带的少量快速重试。
+                    # ⚠️ 主对话链路不传该参数，框架退避重试不受影响。
+                    call_kwargs["request_max_retries"] = 1
                 result = await asyncio.wait_for(
-                    provider.text_chat(prompt, model=self._target_model()),
+                    provider.text_chat(prompt, **call_kwargs),
                     timeout=timeout
                 )
                 text = self._extract_response_text(result)
@@ -1030,8 +1061,49 @@ class EmotionAnalysisExpert:
         
         return updates
     
+    def _maybe_reenable_llm(self):
+        """断路器禁用超过冷却期后自动恢复探测。
+
+        旧实现在 `_llm_failures >= 3` 时置 `_llm_available = False`，而
+        `reset_llm_availability()` 没有任何调用方——一旦禁用，后续所有分析
+        都会直接降级到 smart_fallback，即使上游 429 限流早已消退。
+        现在禁用只是冷却：期满后恢复一次探测，失败则重新计时。
+        """
+        if self._llm_available or not self._llm_disabled_at:
+            return
+        if time.time() - self._llm_disabled_at < self.LLM_CIRCUIT_COOLDOWN_SECONDS:
+            return
+        self._llm_available = True
+        self._llm_failures = 0
+        logger.info(
+            f"LLM分析冷却结束（禁用已超过{self.LLM_CIRCUIT_COOLDOWN_SECONDS:.0f}秒），恢复探测"
+        )
+
+    def _text_chat_supports_fast_fail(self, provider) -> bool:
+        """检测 provider.text_chat 是否接受 request_max_retries（按类缓存）。
+
+        AstrBot 的 provider 是鸭子类型，并非所有实现的 text_chat 都带这个
+        参数；不支持的 provider 退回普通调用，行为与改动前完全一致。
+        """
+        cls = type(provider)
+        cached = self._fast_fail_support_cache.get(cls)
+        if cached is not None:
+            return cached
+        try:
+            params = inspect.signature(provider.text_chat).parameters
+            supported = "request_max_retries" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (AttributeError, TypeError, ValueError):
+            # 没有 text_chat / 签名取不到都按「不支持」处理，
+            # 调用方会退回普通调用，行为与改动前一致
+            supported = False
+        self._fast_fail_support_cache[cls] = supported
+        return supported
+
     def reset_llm_availability(self):
         """重置LLM可用性状态"""
         self._llm_available = True
         self._llm_failures = 0
+        self._llm_disabled_at = 0.0
         logger.info("已重置LLM可用性状态")
