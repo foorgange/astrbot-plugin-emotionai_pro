@@ -44,7 +44,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.3")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.4")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -553,11 +553,16 @@ class EmotionAIProPlugin(Star):
         asyncio.create_task(self._mood_refresh_async())
         return GlobalMood.default()
 
-    def _update_global_mood(self, expert_updates: Dict[str, Any]):
-        """根据专家更新同步演进全局心情（仅情感维度，温和叠加）"""
+    def _update_global_mood(self, updates: Dict[str, Any], allow_spike: bool = True):
+        """演进全局心情（仅情感维度）
+
+        allow_spike=True：关键词/语气实时信号，可触发情绪冲高（默认）；
+        allow_spike=False：专家评估的温和叠加——它与实时信号描述的是
+        同一轮对话，若也冲高就是重复计分，故只做缓慢叠加。
+        """
         try:
             mood = self.get_mood_sync()
-            apply_mood_update(mood, expert_updates)
+            apply_mood_update(mood, updates, allow_spike=allow_spike)
             self._mood_cache = mood
             self._mood_cache_time = time.time()
             asyncio.create_task(self.global_mood_store.save(mood))
@@ -1235,8 +1240,8 @@ class EmotionAIProPlugin(Star):
 
                 logger.info(f"[DEBUG] 应用专家更新: {expert_updates}")
 
-                # 专家更新叠加到全局心情演进
-                self._update_global_mood(expert_updates)
+                # 专家更新叠加到全局心情演进（温和通道：不与实时信号重复计分）
+                self._update_global_mood(expert_updates, allow_spike=False)
             else:
                 logger.warning(f"[DEBUG] 情感分析返回空结果")
 

@@ -19,14 +19,26 @@ from .constants import PathConstants
 MOOD_CACHE_TTL = 60
 
 # 心情也随每条对话实时变化的轻量信号强度上限
-MOOD_SIGNAL_CAP = 3
+# （单维度净增量上限；多条消息叠加时由冲高机制放大，这里只限"一条消息"）
+MOOD_SIGNAL_CAP = 4
 
 # 全局心情演进参数
-MOOD_DECAY = 0.95          # 每轮向中性回归的比例（心情不会永远停留在高点）
-MOOD_SPIKE_MIN = 3         # 信号总强度 ≥ 该值时触发"情绪冲高"
-MOOD_SPIKE_PER_UNIT = 8    # 每单位信号强度对应的冲高值
-MOOD_SPIKE_CAP = 40        # 单次冲高上限（避免一条消息直接封顶 100）
+#
+# 设计取向：心情是高频波动量——同一天内因几句话变好几次很正常，
+# 所以"单条消息即可看见变化"；但又不是开关——单条消息不允许打满，
+# 冲上高强度档位需要持续性互动，久无消息还会自行回归中性。
+MOOD_DECAY = 0.92          # 每轮向中性回归的比例（心情不会永远停留在高点）
+MOOD_SPIKE_MIN = 2         # 信号总强度 ≥ 该值时触发"情绪冲高"（一句话即可触发）
+MOOD_SPIKE_PER_UNIT = 10   # 每单位信号强度对应的冲高值
+MOOD_SPIKE_CAP = 35        # 单次冲高上限（一条消息最多把强度推到 0.35，留足余量）
 MOOD_LOSE_SUPPRESS = 0.2   # 输掉一极的情绪抑制比例（如被骂时 joy ×0.2）
+
+# 时间衰减：心情不随消息流动也会自行平复（早上冲的高不会滞留到深夜）。
+# 距上次更新每满一个 UNIT，整体再乘 TIME_DECAY；最多累计 MAX_UNITS 个
+# 单位（约 3 小时后已接近归零，再久也按 3 小计算，避免无消息时无限衰减）。
+MOOD_TIME_DECAY_UNIT = 1800        # 秒（30 分钟）
+MOOD_TIME_DECAY = 0.5              # 每个时间单位的衰减系数
+MOOD_TIME_DECAY_MAX_UNITS = 6      # 最多累计 6 个单位（3 小时）
 
 MOOD_POSITIVE_DIMS = ("joy", "trust", "anticipation", "surprise")
 MOOD_NEGATIVE_DIMS = ("sadness", "disgust", "anger", "fear")
@@ -109,22 +121,35 @@ class GlobalMoodStore:
         pass
 
 
-def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any]) -> GlobalMood:
+def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any], allow_spike: bool = True) -> GlobalMood:
     """应用一次对话信号到全局心情（每条对话调用一次）
 
+    两条输入通道，幅度刻意区分：
+
+    - **关键词/语气信号**（实时反射，allow_spike=True）：可触发「情绪冲高」，
+      一条消息即可显著改变主导情绪与强度——心情本来就是高频波动的，
+      同一天变几次很正常；
+    - **专家评估更新**（LLM 慢思考，allow_spike=False）：只做温和叠加。
+      它与实时信号描述的是同一轮对话，若也走冲高就是重复计分，
+      会把"一条消息打满"的空间让出来——那种强度只应来自持续性互动。
+
     设计目标：
-    - 实时响应：一条强烈消息即可显著改变心情与强度
+    - 实时响应：普通一句话（"谢谢"/"哈哈"）也能把强度推到看得见的档位
     - 情绪翻转：被骂时 joy 大幅下降 + anger/disgust 上升 → 主导情绪切换
-    - 防刷爆：各维度绝对值上限 [0,100]，冲高有上限，任何用户无法刷穿
+    - 防刷爆：单次冲高有上限（MOOD_SPIKE_CAP），任何用户无法一条封顶
+    - 自行平复：久无消息时按时间衰减回归中性，心情不会从早上滞留到深夜
 
     算法：
+    0. 时间衰减：距上次更新每满 MOOD_TIME_DECAY_UNIT 秒，整体再乘
+       MOOD_TIME_DECAY（最多累计 MOOD_TIME_DECAY_MAX_UNITS 个单位；
+       updated_at=0 表示从未更新过，不做无依据的猜测）
     1. 轻微衰减（×MOOD_DECAY 朝 0 回归），避免长时间无对话后心情恒高
     2. 计算信号总强度（所有维度绝对值之和）
-    3. 若信号够强（≥MOOD_SPIKE_MIN）：触发「情绪冲高」——
+    3. 若允许冲高且信号够强（≥MOOD_SPIKE_MIN）：触发「情绪冲高」——
        - 受信号维度先大幅升降（×冲高系数，但不超过该维绝对值上限）
        - 对立维度受对冲影响下降
        - 主导情绪强度冲到高强度档位，确保单条消息就"看得出变化"
-    4. 弱信号：仅温和叠加（用于长期累积与细微信号）
+    4. 弱信号 / 专家通道：仅温和叠加（用于长期累积与细微信号）
     5. clamp 到 [0,100]，重算强度(0~1)与主导情感
     """
     emotion_keys = [
@@ -132,9 +157,18 @@ def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any]) -> GlobalMood:
         "sadness", "disgust", "anger", "anticipation",
     ]
 
-    # 1. 轻微衰减
+    # 0. 时间衰减：久无消息时心情自行回归中性
+    #    （updated_at=0 表示从未更新过，此时不做无依据的猜测）
+    time_factor = 1.0
+    if mood.updated_at > 0:
+        elapsed = max(0.0, time.time() - mood.updated_at)
+        units = min(int(elapsed // MOOD_TIME_DECAY_UNIT), MOOD_TIME_DECAY_MAX_UNITS)
+        if units > 0:
+            time_factor = MOOD_TIME_DECAY ** units
+
+    # 1. 轻微衰减（叠加时间衰减，朝 0 回归）
     decayed = {
-        k: max(0, int(getattr(mood.emotions, k) * MOOD_DECAY))
+        k: max(0, int(getattr(mood.emotions, k) * MOOD_DECAY * time_factor))
         for k in emotion_keys
     }
     mood.emotions = EmotionalMetrics(**decayed)
@@ -161,7 +195,7 @@ def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any]) -> GlobalMood:
         total_signal = pos_signal + neg_signal
         final = dict(decayed)
 
-        if total_signal >= MOOD_SPIKE_MIN:
+        if allow_spike and total_signal >= MOOD_SPIKE_MIN:
             # 3. 情绪冲高：赢家通吃，但只冲高「信号最强」的单一维度
             #    （人不会同时有好几种心情，主导情绪单一化）
             winner_is_positive = pos_signal > neg_signal
@@ -183,7 +217,7 @@ def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any]) -> GlobalMood:
                 for dim in MOOD_POSITIVE_DIMS:
                     final[dim] = int(final[dim] * MOOD_LOSE_SUPPRESS)
         else:
-            # 4. 弱信号：温和叠加 + 轻微对冲
+            # 4. 弱信号 / 专家通道（allow_spike=False）：温和叠加 + 轻微对冲
             for k, delta in normalized.items():
                 final[k] = max(0, min(100, final[k] + delta))
 
@@ -271,6 +305,64 @@ _MOOD_KEYWORD_MAP: Dict[str, Dict[str, int]] = {
     "期待": {"anticipation": 2},
     "希望": {"anticipation": 1},
     "加油": {"anticipation": 1, "trust": 1},
+    # ---- 群聊常见表达（v4.1.4 扩充：让普通闲聊也能推动心情）----
+    # 积极
+    "哈哈": {"joy": 2},
+    "笑死": {"joy": 2},
+    "好耶": {"joy": 2},
+    "蚌埠": {"joy": 2},
+    "笑不活": {"joy": 2},
+    "贴贴": {"joy": 2, "trust": 1},
+    "抱抱": {"trust": 2, "joy": 1},
+    "么么": {"trust": 2},
+    "亲亲": {"trust": 2, "joy": 1},
+    "恭喜": {"joy": 2},
+    "生日快乐": {"joy": 3, "trust": 1},
+    "早安": {"joy": 1},
+    "晚安": {"joy": 1, "trust": 1},
+    "辛苦了": {"trust": 2},
+    "牛逼": {"joy": 2, "trust": 1},
+    "太强": {"joy": 2},
+    "靠谱": {"trust": 2},
+    "信任": {"trust": 2},
+    "安慰": {"trust": 1, "joy": 1},
+    "陪伴": {"trust": 2},
+    "赞": {"joy": 1, "trust": 1},
+    "喵": {"joy": 1},
+    # 消极
+    "无语": {"sadness": 1, "anger": 1},
+    "离谱": {"anger": 1, "surprise": 1},
+    "逆天": {"anger": 1, "disgust": 1},
+    "麻了": {"sadness": 1},
+    "摆烂": {"sadness": 1},
+    "破防": {"sadness": 2},
+    "泪目": {"sadness": 2},
+    "呜呜": {"sadness": 2},
+    "服了": {"sadness": 1, "anger": 1},
+    "气死": {"anger": 3},
+    "恶心": {"disgust": 3},
+    "膈应": {"disgust": 2},
+    "取关": {"anger": 1, "sadness": 1},
+    "拉黑": {"anger": 2},
+    "爪巴": {"anger": 2},
+    "别叫": {"anger": 1},
+    "闭嘴": {"anger": 1},
+    "吵": {"anger": 1},
+    "焯": {"anger": 1},
+    "对不起": {"sadness": 1},
+    "抱歉": {"sadness": 1},
+    "不好意思": {"sadness": 1},
+    "不理你": {"sadness": 1, "anger": 1},
+    "慌": {"fear": 1},
+    # 直播 / 期待（塔菲是主播，这类词在她直播间极高频率）
+    "直播": {"anticipation": 1},
+    "开播": {"anticipation": 2},
+    "下播": {"sadness": 1},
+    "生日": {"anticipation": 1, "joy": 1},
+    "礼物": {"joy": 1, "anticipation": 1},
+    "催更": {"anticipation": 1},
+    "想看": {"anticipation": 1, "joy": 1},
+    "等着": {"anticipation": 1},
 }
 
 # 关键词表的扁平化副本：(词, ((维度, 增量), ...))——
@@ -288,11 +380,23 @@ _MOOD_EMOJI_POSITIVE = re.compile(r"[:：][)）]|😊|😄|😍|🥰|🤗")
 _MOOD_EMOJI_NEGATIVE = re.compile(r"[:：][(（]|😠|😡|😢|😭|😤")
 
 
+# 否定词：出现在关键词前 1~2 字内时该词不计入
+# （"不喜欢"不是喜悦、"别生气"不是愤怒、"并不感动"不是感动）
+_MOOD_NEGATIONS = ("不", "别", "没", "无")
+
+
+def _is_negated(text: str, idx: int) -> bool:
+    """关键词（起始于 idx）前 1~2 字是否定词"""
+    prefix = text[max(0, idx - 2):idx]
+    return any(n in prefix for n in _MOOD_NEGATIONS)
+
+
 def compute_mood_signal(user_message: str) -> Dict[str, int]:
     """从用户消息提取心情信号（8 维情感增量）
 
     规则：
     - 关键词命中 → 累加对应维度增量（每词最多一次，防刷屏）
+    - 被"不/别/没/无"否定的关键词不计（"不喜欢"不产生喜悦信号）
     - 强烈语气（非常/太/真的+情绪词）→ joy/anger +1
     - 感叹号 → joy +1；疑问号 → surprise +1
     - 正面颜文字 → joy +1；负面颜文字 → sadness +1
@@ -306,11 +410,13 @@ def compute_mood_signal(user_message: str) -> Dict[str, int]:
     signals: Dict[str, int] = {}
     get = signals.get
 
-    # 关键词（去重：每词命中一次）
+    # 关键词（去重：每词命中一次；带否定前缀的词跳过）
     for word, delta in _MOOD_KEYWORD_MAP_ITEMS:
-        if word in text:
-            for k, v in delta:
-                signals[k] = get(k, 0) + v
+        idx = text.find(word)
+        if idx == -1 or _is_negated(text, idx):
+            continue
+        for k, v in delta:
+            signals[k] = get(k, 0) + v
 
     # 语气
     if _MOOD_STRONG_POSITIVE.search(text):

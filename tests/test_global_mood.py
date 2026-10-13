@@ -2,6 +2,7 @@
 """全局心情（共享字段）离线单测"""
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import tests.bootstrap  # noqa: F401  (注册 emotionai_pro 包别名)
 
 from emotionai_pro.global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
-    MOOD_SIGNAL_CAP,
+    MOOD_SIGNAL_CAP, MOOD_SPIKE_CAP,
 )
 from emotionai_pro.models import EmotionalMetrics
 
@@ -24,7 +25,7 @@ class TestGlobalMoodUpdate(unittest.TestCase):
         mood._recompute()
 
         apply_mood_update(mood, {"joy": 3, "trust": 2})
-        # 信号强度 5 ≥ 3 → 冲高：正面赢，joy 大幅上升，负面被压制
+        # 信号强度 5 ≥ MOOD_SPIKE_MIN → 冲高：正面赢，joy 大幅上升，负面被压制
         self.assertGreater(mood.emotions.joy, 20)
         self.assertLess(mood.emotions.anger, 10)
         # 强度在 (0,1] 之间
@@ -46,8 +47,9 @@ class TestGlobalMoodUpdate(unittest.TestCase):
         self.assertEqual(mood.dominant_emotion, "喜悦")
 
         apply_mood_update(mood, {"disgust": 3, "anger": 3})
-        # 衰减后 joy 47, trust 38；负面赢：最强维度(disgust)冲高到 40，joy ×0.2 → 9
-        self.assertGreaterEqual(mood.emotions.disgust, 40)
+        # 衰减后 joy 46, trust 36；负面赢：最强维度(disgust)冲高到 35（单次上限），
+        # 正面维度 ×0.2 → joy 9 / trust 7，主导翻到厌恶
+        self.assertGreaterEqual(mood.emotions.disgust, MOOD_SPIKE_CAP)
         self.assertLess(mood.emotions.joy, 20)
         self.assertGreater(mood.emotions.disgust, mood.emotions.joy)
         self.assertNotEqual(mood.dominant_emotion, "喜悦")
@@ -63,12 +65,12 @@ class TestGlobalMoodUpdate(unittest.TestCase):
         self.assertEqual(mood.dominant_emotion, "喜悦")
 
     def test_weak_signal_gentle(self):
-        """弱信号（<3）：温和叠加，不触发冲高"""
+        """弱信号（<MOOD_SPIKE_MIN）：温和叠加，不触发冲高"""
         mood = GlobalMood(emotions=EmotionalMetrics(joy=20, anger=5))
         mood._recompute()
         apply_mood_update(mood, {"joy": 1})
-        # 先衰减 joy 20→19，弱信号 +1 → 20（不冲高）
-        self.assertEqual(mood.emotions.joy, 20)
+        # 先衰减 joy 20→18（MOOD_DECAY=0.92），弱信号 +1 → 19（不冲高）
+        self.assertEqual(mood.emotions.joy, 19)
         self.assertLessEqual(mood.emotions.anger, 5)
         self.assertGreater(mood.intensity, 0)
 
@@ -177,6 +179,105 @@ class TestComputeMoodSignal(unittest.TestCase):
         for _ in range(3):
             apply_mood_update(mood, compute_mood_signal("好开心！"))
         self.assertNotEqual(mood.dominant_emotion, "中立")
+
+
+class TestMoodAmplitudeV414(unittest.TestCase):
+    """v4.1.4 心情幅度重调：实时可见、单条有界、随时间平复
+
+    背景：心情是高频波动量（同一天可变几次），但又不是开关——
+    单条消息不允许打满，冲上高强度档位需要持续性互动。
+    """
+
+    def test_mild_message_visible(self):
+        """普通一句话（"谢谢"级，信号强度 2）也应把强度推到看得见的档位"""
+        mood = GlobalMood()
+        apply_mood_update(mood, compute_mood_signal("谢谢塔菲"))
+        self.assertEqual(compute_mood_signal("谢谢塔菲"), {"trust": 1, "joy": 1})
+        # 强度 2 ≥ MOOD_SPIKE_MIN → 冲高 20 → 强度 0.20（超出"心情平静"档）
+        self.assertGreaterEqual(mood.intensity, 0.15)
+
+    def test_single_message_bounded(self):
+        """单条消息再激烈也不打满：强度 ≤ MOOD_SPIKE_CAP/100"""
+        mood = GlobalMood()
+        apply_mood_update(mood, {"anger": 4, "disgust": 4, "sadness": 4})
+        self.assertLessEqual(mood.intensity, MOOD_SPIKE_CAP / 100.0)
+
+    def test_sustained_interaction_reaches_high(self):
+        """持续性互动才能冲上"情绪高涨"（不是一条消息）"""
+        mood = GlobalMood()
+        for _ in range(4):
+            apply_mood_update(mood, compute_mood_signal("塔菲好可爱！"))
+        self.assertGreater(mood.intensity, 0.7)
+
+    def test_expert_channel_no_spike(self):
+        """专家评估走温和通道（allow_spike=False）：总分再高也不冲高"""
+        mood = GlobalMood()
+        apply_mood_update(mood, {"joy": 3, "trust": 3}, allow_spike=False)
+        self.assertLessEqual(mood.emotions.joy, 5)
+        # 同一信号若允许冲高（实时通道）则显著更大
+        mood2 = GlobalMood()
+        apply_mood_update(mood2, {"joy": 3, "trust": 3}, allow_spike=True)
+        self.assertGreater(mood2.emotions.joy, mood.emotions.joy + 20)
+
+    def test_time_decay_regresses_to_neutral(self):
+        """久无消息 → 心情按时间衰减回归中性（早上冲的高不滞留到深夜）"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=80, anger=60))
+        mood._recompute()
+        mood.updated_at = time.time() - 3 * 3600  # 3 小时前（= 6 个衰减单位）
+        apply_mood_update(mood, {})  # 空信号也要衰减
+        self.assertLess(mood.emotions.joy, 5)
+        self.assertLess(mood.emotions.anger, 5)
+        self.assertLess(mood.intensity, 0.05)
+
+    def test_no_time_decay_without_timestamp(self):
+        """updated_at=0（从未更新过）不做无依据的时间衰减"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=80))
+        mood._recompute()
+        apply_mood_update(mood, {})
+        # 只剩常规消息衰减 0.92
+        self.assertGreaterEqual(mood.emotions.joy, 70)
+
+    def test_mood_swings_multiple_times_a_day(self):
+        """核心场景：同一天内心情因几句话变好几次，且段间自行平复"""
+        mood = GlobalMood()
+        # 早上：被夸 → 喜悦冲高
+        mood.updated_at = time.time() - 60
+        apply_mood_update(mood, compute_mood_signal("塔菲太可爱了！"))
+        first = mood.dominant_emotion
+        self.assertGreater(mood.intensity, 0.2)
+
+        # 中午：2 小时沉默 → 平复到接近中立
+        mood.updated_at = time.time() - 2 * 3600
+        apply_mood_update(mood, {})
+        self.assertLess(mood.intensity, 0.05)
+
+        # 下午：被骂 → 主导翻到负面
+        apply_mood_update(mood, compute_mood_signal("讨厌死了滚啊"))
+        second = mood.dominant_emotion
+        self.assertNotEqual(second, first)
+        self.assertGreater(mood.intensity, 0.2)
+
+        # 深夜：又哄开心 → 再翻回正面
+        mood.updated_at = time.time() - 3 * 3600
+        apply_mood_update(mood, {})
+        apply_mood_update(mood, compute_mood_signal("给你贴贴么么"))
+        third = mood.dominant_emotion
+        self.assertNotEqual(third, second)
+
+    def test_new_keywords_covered(self):
+        """群聊常见表达进入关键词表（普通闲聊也能推动心情）"""
+        self.assertGreaterEqual(compute_mood_signal("哈哈哈笑死我了").get("joy", 0), 4)
+        self.assertGreaterEqual(compute_mood_signal("蚌埠住了").get("joy", 0), 2)
+        self.assertGreaterEqual(compute_mood_signal("无语了").get("sadness", 0), 1)
+        self.assertGreaterEqual(compute_mood_signal("今晚开播吗").get("anticipation", 0), 2)
+
+    def test_negated_keyword_no_positive(self):
+        """被否定的关键词不产生反向信号（"不喜欢"不是喜悦）"""
+        sig = compute_mood_signal("我不喜欢这样")
+        self.assertEqual(sig.get("joy", 0), 0)
+        self.assertEqual(sig.get("trust", 0), 0)
+        # "别生气"同样不计愤怒
+        self.assertEqual(compute_mood_signal("别生气嘛").get("anger", 0), 0)
 
 
 if __name__ == "__main__":
