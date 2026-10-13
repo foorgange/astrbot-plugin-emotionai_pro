@@ -14,6 +14,9 @@ import tests.bootstrap  # noqa: F401  (注册 emotionai_pro 包别名)
 from emotionai_pro.global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
     MOOD_SIGNAL_CAP, MOOD_SPIKE_CAP,
+    build_mood_change_reason, preview_time_decayed, compute_time_decay_factor,
+    mood_trigger_excerpt,
+    MOOD_TIME_DECAY, MOOD_TIME_DECAY_MAX_UNITS,
 )
 from emotionai_pro.models import EmotionalMetrics
 
@@ -278,6 +281,146 @@ class TestMoodAmplitudeV414(unittest.TestCase):
         self.assertEqual(sig.get("trust", 0), 0)
         # "别生气"同样不计愤怒
         self.assertEqual(compute_mood_signal("别生气嘛").get("anger", 0), 0)
+
+
+class TestMoodChangeReasonV415(unittest.TestCase):
+    """「/心情」命令支撑：变化原因、衰减预览、消息摘录（v4.1.5）"""
+
+    def test_reason_recorded_on_flip(self):
+        """主导翻转 → 生成带人设名与触发来源的变化原因"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=50, trust=40))
+        mood._recompute()
+        before_dom, before_int = mood.dominant_emotion, mood.intensity
+        apply_mood_update(mood, {"anger": 3})
+        reason = build_mood_change_reason(
+            before_dom, before_int, mood, "听到「气死」", subject="永雏塔菲",
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("永雏塔菲", reason)
+        self.assertIn("听到「气死」", reason)
+        self.assertIn("生气起来", reason)  # 翻到愤怒
+
+    def test_reason_without_subject(self):
+        """无人设名时用「心情」作主语，句子仍完整"""
+        mood = GlobalMood()
+        mood._recompute()
+        before_dom, before_int = mood.dominant_emotion, mood.intensity
+        apply_mood_update(mood, {"joy": 3})
+        reason = build_mood_change_reason(before_dom, before_int, mood, "听到「哈哈」")
+        self.assertIn("心情变得", reason)
+        self.assertNotIn("None", reason)
+
+    def test_no_reason_on_invisible_change(self):
+        """不可见波动（未翻转且强度变化 <0.05）→ 不生成新原因"""
+        # 场景 1：弱信号 + 逐轮衰减，强度仅跌 0.01
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=20))
+        mood._recompute()
+        before_dom, before_int = mood.dominant_emotion, mood.intensity
+        apply_mood_update(mood, {"joy": 1})  # joy 20→衰减 18→+1=19
+        self.assertLess(abs(mood.intensity - before_int), 0.05)
+        self.assertIsNone(
+            build_mood_change_reason(before_dom, before_int, mood, "听到「好」")
+        )
+
+        # 场景 2：空信号（只有逐轮衰减），强度跌 0.03——弱消息的常规
+        # 衰减带，同样不该覆盖已有原因
+        mood2 = GlobalMood(emotions=EmotionalMetrics(joy=50))
+        mood2._recompute()
+        before_dom2, before_int2 = mood2.dominant_emotion, mood2.intensity
+        apply_mood_update(mood2, {})  # joy 50→46，强度 0.50→0.46
+        self.assertAlmostEqual(mood2.intensity, before_int2 - 0.04, places=2)
+        self.assertIsNone(
+            build_mood_change_reason(before_dom2, before_int2, mood2, "听到「在吗」")
+        )
+
+    def test_reason_on_intensity_drop(self):
+        """强度大幅回落（未翻转）→ 心情渐渐平复描述（不归因于触发消息）"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=80))
+        mood._recompute()
+        before_dom, before_int = mood.dominant_emotion, mood.intensity
+        mood.updated_at = time.time() - 3 * 3600  # 时间衰减主导：强度大降
+        apply_mood_update(mood, {"joy": 1})
+        self.assertLess(mood.intensity, before_int - 0.05)
+        reason = build_mood_change_reason(
+            before_dom, before_int, mood, "听到「喵」", subject="永雏塔菲",
+        )
+        self.assertIn("心情渐渐平复", reason)
+        self.assertNotIn("因为", reason)  # 不把回落算到触发消息头上
+
+    def test_reason_persistence_roundtrip(self):
+        """last_change_reason/last_change_at 随 to_dict/from_dict 往返"""
+        mood = GlobalMood()
+        mood.last_change_reason = "因为听到「哈哈」，永雏塔菲变得开心起来"
+        mood.last_change_at = 1234567890.0
+        data = mood.to_dict()
+        self.assertEqual(data["last_change_reason"], mood.last_change_reason)
+        self.assertEqual(data["last_change_at"], 1234567890.0)
+        restored = GlobalMood.from_dict(data)
+        self.assertEqual(restored.last_change_reason, mood.last_change_reason)
+        self.assertEqual(restored.last_change_at, 1234567890.0)
+
+    def test_from_dict_missing_reason_fields(self):
+        """旧存档（v4.1.5 之前）没有新字段 → 默认空，不抛异常"""
+        mood = GlobalMood.from_dict({"emotions": {"joy": 10}, "updated_at": 1.0})
+        self.assertEqual(mood.last_change_reason, "")
+        self.assertEqual(mood.last_change_at, 0)
+
+    def test_from_dict_corrupted_reason_fields(self):
+        """新字段类型损坏 → 回退默认值，不抛异常"""
+        mood = GlobalMood.from_dict({
+            "emotions": {"joy": 10},
+            "last_change_reason": 12345,
+            "last_change_at": "不是时间",
+        })
+        self.assertEqual(mood.last_change_reason, "")
+        self.assertEqual(mood.last_change_at, 0)
+
+    def test_compute_time_decay_factor(self):
+        """衰减系数：从未更新/刚更新=1，久未更新按单位衰减且有上限"""
+        self.assertEqual(compute_time_decay_factor(0), 1.0)
+        self.assertEqual(compute_time_decay_factor(time.time()), 1.0)
+        # 1 小时 → 2 个单位 → 0.5^2
+        self.assertAlmostEqual(compute_time_decay_factor(time.time() - 3600), 0.25)
+        # 10 小时 → 超过 6 个单位上限 → 0.5^6
+        self.assertAlmostEqual(
+            compute_time_decay_factor(time.time() - 10 * 3600),
+            MOOD_TIME_DECAY ** MOOD_TIME_DECAY_MAX_UNITS,
+        )
+
+    def test_preview_time_decayed_copies_without_mutation(self):
+        """预览：按衰减复制心情，原存档不被修改，原因字段随预览带出"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=80, trust=40))
+        mood._recompute()
+        mood.updated_at = time.time() - 2 * 3600  # 4 个单位 → ×0.5^4=0.0625
+        mood.last_change_reason = "因为听到「哈哈」，永雏塔菲变得开心起来"
+        preview = preview_time_decayed(mood)
+        self.assertIsNot(preview, mood)
+        self.assertEqual(preview.emotions.joy, int(80 * 0.0625))   # 5
+        self.assertEqual(preview.emotions.trust, int(40 * 0.0625))  # 2
+        self.assertEqual(preview.last_change_reason, mood.last_change_reason)
+        # 原存档分毫未动
+        self.assertEqual(mood.emotions.joy, 80)
+        self.assertEqual(mood.emotions.trust, 40)
+        self.assertAlmostEqual(preview.intensity, 0.05)
+
+    def test_preview_no_decay_returns_same_object(self):
+        """刚更新过 / 从未更新 → 无衰减，直接返回原对象（调用方只读）"""
+        mood = GlobalMood(emotions=EmotionalMetrics(joy=50))
+        mood._recompute()
+        mood.updated_at = time.time()
+        self.assertIs(preview_time_decayed(mood), mood)
+        mood.updated_at = 0
+        self.assertIs(preview_time_decayed(mood), mood)
+
+    def test_mood_trigger_excerpt(self):
+        """消息摘录：去换行压缩空白，超长截断加省略号"""
+        self.assertEqual(mood_trigger_excerpt("哈哈笑死"), "哈哈笑死")
+        self.assertEqual(mood_trigger_excerpt("  哈哈\n  笑死  "), "哈哈 笑死")
+        self.assertEqual(mood_trigger_excerpt("", ), "")
+        long_text = "这是一条特别特别特别特别特别长的消息"
+        excerpt = mood_trigger_excerpt(long_text)
+        self.assertTrue(excerpt.endswith("…"))
+        self.assertLessEqual(len(excerpt), 13)  # 12 字 + 省略号
 
 
 if __name__ == "__main__":

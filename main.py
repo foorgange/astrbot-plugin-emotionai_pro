@@ -32,6 +32,7 @@ from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
 from .global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
+    build_mood_change_reason, mood_trigger_excerpt,
     MOOD_CACHE_TTL,
 )
 
@@ -44,7 +45,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.4")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.5")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -553,16 +554,29 @@ class EmotionAIProPlugin(Star):
         asyncio.create_task(self._mood_refresh_async())
         return GlobalMood.default()
 
-    def _update_global_mood(self, updates: Dict[str, Any], allow_spike: bool = True):
+    def _update_global_mood(self, updates: Dict[str, Any], allow_spike: bool = True, trigger: str = ""):
         """演进全局心情（仅情感维度）
 
         allow_spike=True：关键词/语气实时信号，可触发情绪冲高（默认）；
         allow_spike=False：专家评估的温和叠加——它与实时信号描述的是
         同一轮对话，若也冲高就是重复计分，故只做缓慢叠加。
+        trigger：触发来源描述（如 听到「哈哈」），非空时尝试刷新
+        「最近一次心情变化原因」（/心情 命令展示）；不可见的小波动
+        （主导未翻转且强度变化 <0.05）不覆盖上一条有记录的原因。
         """
         try:
             mood = self.get_mood_sync()
+            before_dominant = mood.dominant_emotion
+            before_intensity = mood.intensity
             apply_mood_update(mood, updates, allow_spike=allow_spike)
+            if trigger:
+                reason = build_mood_change_reason(
+                    before_dominant, before_intensity, mood, trigger,
+                    subject=self._get_bot_name() or "",
+                )
+                if reason:
+                    mood.last_change_reason = reason
+                    mood.last_change_at = mood.updated_at
             self._mood_cache = mood
             self._mood_cache_time = time.time()
             asyncio.create_task(self.global_mood_store.save(mood))
@@ -1154,7 +1168,10 @@ class EmotionAIProPlugin(Star):
         # 纯本地关键词/语气计算，微秒级，保持同步执行。
         mood_signal = compute_mood_signal(user_message)
         if mood_signal:
-            self._update_global_mood(mood_signal)
+            self._update_global_mood(
+                mood_signal,
+                trigger=f"听到「{mood_trigger_excerpt(user_message)}」",
+            )
 
         # 状态展示：必须在回复发出前追加到 resp.completion_text。
         # 此处反映的是本轮更新前的心情（数值更新在后台任务完成时才生效）。
@@ -1241,7 +1258,9 @@ class EmotionAIProPlugin(Star):
                 logger.info(f"[DEBUG] 应用专家更新: {expert_updates}")
 
                 # 专家更新叠加到全局心情演进（温和通道：不与实时信号重复计分）
-                self._update_global_mood(expert_updates, allow_spike=False)
+                self._update_global_mood(
+                    expert_updates, allow_spike=False, trigger="回味刚才的对话",
+                )
             else:
                 logger.warning(f"[DEBUG] 情感分析返回空结果")
 
@@ -1505,6 +1524,12 @@ class EmotionAIProPlugin(Star):
     async def show_relationship_stage(self, event: AstrMessageEvent):
         """显示关系阶段详情"""
         async for result in self.user_commands.show_relationship_stage(event):
+            yield result
+
+    @filter.command("心情", priority=5)
+    async def show_global_mood(self, event: AstrMessageEvent):
+        """查看 bot 当前心情与最近一次变化原因"""
+        async for result in self.user_commands.show_global_mood(event):
             yield result
         
     # ==================== 排行榜命令 ====================

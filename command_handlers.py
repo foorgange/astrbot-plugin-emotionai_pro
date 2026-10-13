@@ -12,6 +12,29 @@ from .models import EnhancedEmotionalState, RankingEntry
 from .managers import UserStateManager, RankingManager, SmartUpdateManager, EmotionAnalyzer
 from .memory import EnhancedMemorySystem
 from .config import PluginConfig, PrivacyLevel
+from .global_mood import preview_time_decayed, MOOD_TIME_DECAY_UNIT
+
+
+def _format_duration(seconds: float) -> str:
+    """秒数 → 「45 分钟」「3 小时」（心情命令用）"""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    if seconds < 3600:
+        return f"{seconds // 60} 分钟"
+    return f"{seconds // 3600} 小时"
+
+
+def _format_relative_time(timestamp: float) -> str:
+    """时间戳 → 「刚刚」「5 分钟前」「3 小时前」「2 天前」（心情命令用）"""
+    delta = max(0.0, time.time() - timestamp)
+    if delta < 60:
+        return "刚刚"
+    if delta < 3600:
+        return f"{int(delta // 60)} 分钟前"
+    if delta < 86400:
+        return f"{int(delta // 3600)} 小时前"
+    return f"{int(delta // 86400)} 天前"
 
 class BaseCommandHandler:
     """基础命令处理器"""
@@ -218,6 +241,42 @@ class UserCommandHandler(BaseCommandHandler):
         ])
         
         yield event.plain_result("\n".join(response_lines))
+        event.stop_event()
+
+    async def show_global_mood(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        """查看 bot 当前全局心情与最近一次变化原因（v4.1.5 新增）"""
+        if self.config.global_privacy_level == PrivacyLevel.FULL_SECRET:
+            yield event.plain_result("【当前心情】*保密*")
+            event.stop_event()
+            return
+
+        # 时间衰减是惰性的（只在下次更新时生效），查询时按同一套规则
+        # 做只读预览，避免展示明显高估的存档强度
+        mood = preview_time_decayed(self.plugin.get_mood_sync())
+        mood_label = self.plugin._get_mood_label(mood.intensity)
+
+        lines = [
+            "【当前心情】",
+            "====================================",
+            f"主导情绪：{mood.dominant_emotion}（{mood_label}）",
+            f"强度：{mood.intensity:.2f} / 1.0",
+        ]
+
+        # 静默较久时说明强度是衰减预览，避免用户误解为当前真实值
+        if mood.updated_at > 0:
+            silent = time.time() - mood.updated_at
+            if silent >= MOOD_TIME_DECAY_UNIT:
+                lines.append(f"（已静默 {_format_duration(silent)}，心情正在自行平复）")
+
+        lines.extend(["", "【最近一次变化】"])
+        if mood.last_change_reason:
+            lines.append(mood.last_change_reason)
+            if mood.last_change_at > 0:
+                lines.append(f"（{_format_relative_time(mood.last_change_at)}）")
+        else:
+            lines.append("还没有值得记录的心情变化")
+
+        yield event.plain_result("\n".join(lines))
         event.stop_event()
 
 class AdminCommandHandler(BaseCommandHandler):

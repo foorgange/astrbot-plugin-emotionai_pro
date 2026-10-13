@@ -43,6 +43,12 @@ MOOD_TIME_DECAY_MAX_UNITS = 6      # 最多累计 6 个单位（3 小时）
 MOOD_POSITIVE_DIMS = ("joy", "trust", "anticipation", "surprise")
 MOOD_NEGATIVE_DIMS = ("sadness", "disgust", "anger", "fear")
 
+# 8 维情绪键（演进/衰减/预览共用同一份顺序，避免多处各写一份）
+MOOD_EMOTION_KEYS = (
+    "joy", "trust", "fear", "surprise",
+    "sadness", "disgust", "anger", "anticipation",
+)
+
 
 @dataclass
 class GlobalMood:
@@ -51,6 +57,11 @@ class GlobalMood:
     intensity: float = 0.0  # 0~1，主导情绪强度
     dominant_emotion: str = "中立"
     updated_at: float = 0
+    # 最近一次「可见」心情变化的原因描述与发生时间（/心情 命令展示用）。
+    # 只有主导翻转或强度波动 ≥0.02 的更新才会刷新，避免「波动不大」
+    # 这类废话把真正的变化原因覆盖掉；旧存档没有这两个字段，默认空。
+    last_change_reason: str = ""
+    last_change_at: float = 0
 
     def _recompute(self):
         """根据 8 维情绪重算强度与主导情感
@@ -72,6 +83,8 @@ class GlobalMood:
             "intensity": self.intensity,
             "dominant_emotion": self.dominant_emotion,
             "updated_at": self.updated_at,
+            "last_change_reason": self.last_change_reason,
+            "last_change_at": self.last_change_at,
         }
 
     @classmethod
@@ -88,6 +101,15 @@ class GlobalMood:
         mood = cls(emotions=emotions)
         mood._recompute()
         mood.updated_at = data.get("updated_at", 0)
+        # 变化原因两个字段是 v4.1.5 新增：旧存档没有，类型损坏时回退默认值
+        reason = data.get("last_change_reason", "")
+        changed_at = data.get("last_change_at", 0)
+        mood.last_change_reason = reason if isinstance(reason, str) else ""
+        mood.last_change_at = (
+            float(changed_at)
+            if isinstance(changed_at, (int, float)) and not isinstance(changed_at, bool)
+            else 0
+        )
         return mood
 
     @staticmethod
@@ -121,6 +143,23 @@ class GlobalMoodStore:
         pass
 
 
+def compute_time_decay_factor(updated_at: float) -> float:
+    """距上次更新 updated_at 的时间衰减系数（1.0 = 不衰减）
+
+    与 apply_mood_update 第 0 步同一套规则：每满一个
+    MOOD_TIME_DECAY_UNIT 再乘 MOOD_TIME_DECAY，最多累计
+    MOOD_TIME_DECAY_MAX_UNITS 个单位。updated_at<=0 表示从未更新过，
+    不做无依据的猜测，返回 1.0。
+    """
+    if updated_at <= 0:
+        return 1.0
+    elapsed = max(0.0, time.time() - updated_at)
+    units = min(int(elapsed // MOOD_TIME_DECAY_UNIT), MOOD_TIME_DECAY_MAX_UNITS)
+    if units <= 0:
+        return 1.0
+    return MOOD_TIME_DECAY ** units
+
+
 def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any], allow_spike: bool = True) -> GlobalMood:
     """应用一次对话信号到全局心情（每条对话调用一次）
 
@@ -152,19 +191,11 @@ def apply_mood_update(mood: GlobalMood, updates: Dict[str, Any], allow_spike: bo
     4. 弱信号 / 专家通道：仅温和叠加（用于长期累积与细微信号）
     5. clamp 到 [0,100]，重算强度(0~1)与主导情感
     """
-    emotion_keys = [
-        "joy", "trust", "fear", "surprise",
-        "sadness", "disgust", "anger", "anticipation",
-    ]
+    emotion_keys = MOOD_EMOTION_KEYS
 
     # 0. 时间衰减：久无消息时心情自行回归中性
     #    （updated_at=0 表示从未更新过，此时不做无依据的猜测）
-    time_factor = 1.0
-    if mood.updated_at > 0:
-        elapsed = max(0.0, time.time() - mood.updated_at)
-        units = min(int(elapsed // MOOD_TIME_DECAY_UNIT), MOOD_TIME_DECAY_MAX_UNITS)
-        if units > 0:
-            time_factor = MOOD_TIME_DECAY ** units
+    time_factor = compute_time_decay_factor(mood.updated_at)
 
     # 1. 轻微衰减（叠加时间衰减，朝 0 回归）
     decayed = {
@@ -441,3 +472,87 @@ def compute_mood_signal(user_message: str) -> Dict[str, int]:
 
     # clamp 到 [-MOOD_SIGNAL_CAP, MOOD_SIGNAL_CAP]
     return {k: max(-MOOD_SIGNAL_CAP, min(MOOD_SIGNAL_CAP, v)) for k, v in signals.items()}
+
+
+# ---------------------------------------------------------------------------
+# 「/心情」命令支持：衰减预览、变化原因生成、消息摘录
+# ---------------------------------------------------------------------------
+
+def preview_time_decayed(mood: GlobalMood) -> GlobalMood:
+    """返回按时间衰减预览的心情副本（只读：不修改传入对象、不落盘）
+
+    时间衰减是惰性的——只在下次 apply_mood_update 时生效。命令查询时
+    若距上次更新已久，直接展示存档值会高估当前强度，故展示前先按
+    同一套规则预览。无衰减（系数 1.0）时直接返回原对象，调用方须
+    视为只读。
+    """
+    factor = compute_time_decay_factor(mood.updated_at)
+    if factor >= 1.0:
+        return mood
+    decayed = {
+        k: max(0, int(getattr(mood.emotions, k) * factor))
+        for k in MOOD_EMOTION_KEYS
+    }
+    preview = GlobalMood(emotions=EmotionalMetrics(**decayed))
+    preview._recompute()
+    preview.updated_at = mood.updated_at
+    preview.last_change_reason = mood.last_change_reason
+    preview.last_change_at = mood.last_change_at
+    return preview
+
+
+# 心情变化原因描述：主导情绪 → 「变得__」的口语短语
+_MOOD_CHANGE_PHRASES = {
+    "喜悦": "开心起来",
+    "信任": "安心起来",
+    "期待": "期待起来",
+    "惊讶": "惊讶起来",
+    "悲伤": "难过起来",
+    "厌恶": "嫌弃起来",
+    "愤怒": "生气起来",
+    "恐惧": "慌张起来",
+    "中立": "平静起来",
+}
+
+
+def build_mood_change_reason(
+    before_dominant: str,
+    before_intensity: float,
+    after: GlobalMood,
+    trigger: str,
+    subject: str = "",
+) -> Optional[str]:
+    """根据一次心情更新生成「最近一次变化原因」描述
+
+    返回 None 表示这次更新没有可见变化（主导未翻转且强度波动
+    <0.05）——此时调用方应保留上一条有记录的原因。阈值取 0.05
+    （半个心情档位的 1/3）：弱消息引发的逐轮衰减（×0.92）通常只
+    带来 0.01~0.03 的跌落，够不上「可见」；而情绪冲高（≥0.1）与
+    久无消息的时间衰减（动辄 0.2+）都远超它。
+
+    trigger：触发来源（如 听到「哈哈」）；subject：bot 人设名，
+    为空时用「心情」作主语，保证句子完整。
+    """
+    flipped = after.dominant_emotion != before_dominant
+    delta = after.intensity - before_intensity
+    if not flipped and abs(delta) < 0.05:
+        return None
+
+    who = subject if subject else "心情"
+    if delta < 0 and not flipped:
+        # 强度回落多半是逐轮衰减/时间衰减主导，别把账算到触发消息头上
+        return f"{trigger}之后，{who}的心情渐渐平复"
+    phrase = _MOOD_CHANGE_PHRASES.get(after.dominant_emotion, "有所波动")
+    return f"因为{trigger}，{who}变得{phrase}"
+
+
+def mood_trigger_excerpt(text: str, limit: int = 12) -> str:
+    """心情变化原因里的消息摘录：去换行/压缩空白，超长截断加省略号
+
+    原因描述会随心情存档持久化并可能被 /心情 命令展示，摘录必须
+    短——既避免刷屏，也避免把整条长消息塞进存档。
+    """
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit] + "…"
