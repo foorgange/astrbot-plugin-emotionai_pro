@@ -231,6 +231,12 @@
     "default": true,
     "hint": "开启后 bot 的实时心情（喜怒哀伤等）会注入主对话，影响回复的语气与情绪表达；关闭后心情照常演进与展示，仅不注入 LLM。不会影响模型上下文缓存命中（注入位置在用户消息之后）"
   },
+  "image_format_filter_enabled": {
+    "description": "过滤不支持的图片格式(如SVG)，避免回复变慢",
+    "type": "bool",
+    "default": true,
+    "hint": "群内出现 SVG 等非常规格式图片时自动替换为占位文本，避免模型连环报错、连切多个 provider 导致回复要等半分钟；正常格式的图片不受影响，判不出格式的一律放行"
+  },
   "enable_ai_text_generation": {
     "description": "启用 AI 自主生成文本描述",
     "type": "bool", 

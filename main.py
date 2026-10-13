@@ -35,6 +35,7 @@ from .global_mood import (
     build_mood_change_reason, mood_trigger_excerpt, describe_mood,
     MOOD_CACHE_TTL,
 )
+from .image_format_guard import filter_image_urls, filter_unsupported_image_parts
 
 # 独立的「AI/ai」字样（前后非字母数字）：预编译避免每次调用重复解析
 # 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
@@ -45,7 +46,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.6")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.7")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -777,6 +778,11 @@ class EmotionAIProPlugin(Star):
         # 详见 _apply_context_freshness 注释）
         self._apply_context_freshness(event, req, state)
 
+        # v4.1.7：图片格式守卫。必须在保鲜之后：保鲜快照的永远是
+        # 未经滤染的原始上下文（数据库记录完好），过滤只作用于
+        # 本轮请求可见的内容。
+        self._filter_unsupported_images(event, req)
+
         # 构建融合的情感上下文
         emotional_context = self._build_enhanced_context(state)
         req.extra_user_content_parts.append(TextPart(text=f"\n{emotional_context}"))
@@ -964,6 +970,48 @@ class EmotionAIProPlugin(Star):
                 )
         except Exception as e:
             logger.warning(f"上下文保鲜处理失败，保持默认行为: {e}")
+
+    def _filter_unsupported_images(self, event: AstrMessageEvent,
+                                   req: ProviderRequest) -> None:
+        """v4.1.7 图片格式守卫（根因与策略详见 image_format_guard 模块）。
+
+        位置选在 on_llm_request 的保鲜之后：
+          - 保鲜快照的是原始上下文（数据库记录完好），过滤只作用
+            于本轮请求，落盘历史不被改写；
+          - 本回合图片（req.image_urls）框架要到 reset() 才会转
+            data URI，此时还是路径/URL，按后缀判定即可。
+
+        任何异常都只 warning 不抛出：过滤是优化，不是必需品，
+        绝不能因为它阻断用户的 LLM 请求。
+        """
+        try:
+            if not getattr(self.config, "image_format_filter_enabled", True):
+                return
+
+            notes = []
+
+            image_urls = getattr(req, "image_urls", None)
+            if image_urls:
+                filtered = filter_image_urls(image_urls)
+                dropped = len(image_urls) - len(filtered)
+                if dropped > 0:
+                    req.image_urls = filtered
+                    notes.append(f"本回合图片移除 {dropped} 张")
+
+            contexts = getattr(req, "contexts", None)
+            if contexts:
+                new_contexts, replaced = filter_unsupported_image_parts(contexts)
+                if replaced > 0:
+                    req.contexts = new_contexts
+                    notes.append(f"历史上下文替换 {replaced} 处")
+
+            if notes:
+                logger.info(
+                    "图片格式守卫: " + "，".join(notes)
+                    + "（不支持的格式已替换为占位文本，避免 provider 连环报错）"
+                )
+        except Exception as e:
+            logger.warning(f"图片格式过滤失败，保持默认行为: {e}")
 
     @filter.on_agent_done()
     async def _restore_full_context(self, event: AstrMessageEvent,

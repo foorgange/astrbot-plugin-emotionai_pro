@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.1.6
+version: v4.1.7
 author: asakiyoshi (原作者), foorgange (修复)
 social_link: https://github.com/foorgange
 desc: >
@@ -49,6 +49,13 @@ desc: >
   心情由所有对话共享，随每条消息实时起伏：一句夸奖、一句吐槽都能当场改变
   主导情绪与强度，被哄和被骂会在同一天里来回翻转；久不搭理又会自己慢慢
   平复回中性，不会从早上滞留到深夜。可在对话中显示当前心情与强度。
+
+
+  【图片兼容】
+
+  群里出现 SVG 等模型不认识的图片格式时，会自动替换为占位文本，不再出现
+  模型连环报错、连切多个提供商导致一句回复等半分钟的情况；常见格式的图片
+  原样传递，判不出格式的一律放行，不会误杀。
 
 
   【智能更新】

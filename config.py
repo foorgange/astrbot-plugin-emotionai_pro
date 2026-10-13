@@ -94,6 +94,13 @@ class PluginConfig(BaseModel):
     # 全局心情是否参与主对话回复生成（v4.1.6）。关闭后心情仍正常演进与
     # 展示（/心情、/查看好感），只是不再注入 LLM 请求。
     enable_mood_influence: bool = Field(default=True, description="启用心情影响回复")
+    # 图片格式守卫（v4.1.7）。群里出现 SVG 等非通用格式图片时，框架会
+    # 原样注入请求：主模型 400（Cannot decode visions）→ fallback 商汤系
+    # 再 400（invalid image base64）→ 连切多个 provider 才被链尾兜住，
+    # 用户侧表现为「回复出奇地慢」，还顺带挤占 step 的 rpm 配额。开启
+    # 后插件在请求前把不支持的图片替换为 [Image] 占位；判不出格式的
+    # 一律放行，不会误杀正常图片。
+    image_format_filter_enabled: bool = Field(default=True, description="过滤不支持的图片格式(如SVG)，避免provider连环报错导致回复变慢")
     enable_ai_text_generation: bool = Field(default=True, description="启用AI自主生成文本描述")
     global_privacy_level: PrivacyLevel = Field(default=PrivacyLevel.BASIC, description="全局隐私级别")
     enable_smart_update: bool = Field(default=True, description="启用智能更新机制")
