@@ -606,6 +606,110 @@ class TestAiTextGenerationSwitchBehaviour(unittest.TestCase):
                 return
         self.fail("未找到 _parse_emotion_analysis 方法")
 
+class TestPerformanceParamsAreWired(unittest.TestCase):
+    """v4.1.10：5 个性能参数必须真正接线
+
+    背景：这 5 个字段（cache_ttl / cache_max_size / auto_save_interval /
+    max_dirty_keys / backup_retention_days）在 WebUI 可见可改，但
+    _load_and_validate_config 既没把它们放进 base_mapping，又用一段
+    硬编码 config_dict.update 把默认值拍回去——用户改了没有任何效果
+    （消费方一直都在读 self.config，坏的只是管道）。
+    修复 = 补白名单 + 删硬编码块。本类锁死修复后的行为。
+    """
+
+    _KEYS = ("cache_ttl", "cache_max_size", "auto_save_interval",
+             "max_dirty_keys", "backup_retention_days")
+
+    def _src(self, module_name):
+        root = Path(__file__).resolve().parent.parent
+        return (root / module_name).read_text(encoding="utf-8")
+
+    def test_base_mapping_contains_five_perf_params(self):
+        src = self._src("main.py")
+        for key in self._KEYS:
+            self.assertIn(f'"{key}": "{key}"', src,
+                          f"base_mapping 白名单漏了 {key}（WebUI 改了不生效的根因）")
+
+    def test_hardcoded_override_block_is_gone(self):
+        """硬编码拍平块必须已删除——否则白名单接了也白接"""
+        src = self._src("main.py")
+        self.assertNotIn('"cache_ttl": 300,', src,
+                         "仍有硬编码块把用户配置拍回默认值")
+
+    def test_webui_values_reach_plugin_config(self):
+        """行为级：WebUI 设的值必须流进 self.config"""
+        plugin = type("P", (), {"_raw_config": None})()
+        cfg = EmotionAIProPlugin._load_and_validate_config(
+            plugin, {"cache_ttl": 999, "cache_max_size": 123,
+                     "auto_save_interval": 7, "max_dirty_keys": 42,
+                     "backup_retention_days": 30})
+        self.assertEqual(cfg.cache_ttl, 999)
+        self.assertEqual(cfg.cache_max_size, 123)
+        self.assertEqual(cfg.auto_save_interval, 7)
+        self.assertEqual(cfg.max_dirty_keys, 42)
+        self.assertEqual(cfg.backup_retention_days, 30)
+
+    def test_defaults_when_missing(self):
+        """缺省时退回 pydantic 默认值（与旧硬编码值一致，未调参的机器人行为不变）"""
+        plugin = type("P", (), {"_raw_config": None})()
+        cfg = EmotionAIProPlugin._load_and_validate_config(plugin, {})
+        self.assertEqual(cfg.cache_ttl, 300)
+        self.assertEqual(cfg.cache_max_size, 1000)
+        self.assertEqual(cfg.auto_save_interval, 60)
+        self.assertEqual(cfg.max_dirty_keys, 1000)
+        self.assertEqual(cfg.backup_retention_days, 7)
+
+    def test_consumers_read_from_config(self):
+        """消费方必须从 self.config 读（缓存/备份/自动保存三处）"""
+        main_src = self._src("main.py")
+        self.assertIn("BackupManager(data_dir, self.config.backup_retention_days)", main_src)
+        self.assertIn("max_size=self.config.cache_max_size", main_src)
+        self.assertIn("default_ttl=self.config.cache_ttl", main_src)
+        mgr_src = self._src("managers.py")
+        self.assertIn("asyncio.sleep(self.config.auto_save_interval)", mgr_src)
+        self.assertIn("self.config.max_dirty_keys", mgr_src)
+
+
+class TestSchemaValidatorCoversConfigFields(unittest.TestCase):
+    """v4.1.10：schema_validator 必须覆盖 PluginConfig 全部字段
+
+    顶层 CONFIG_SCHEMA 是 additionalProperties=False，漏字段会让
+    含有这些键的配置被判非法（目前零调用点，属潜伏坑，但违反
+    项目「新字段必须进 validator」的规矩）。字段集相等一劳永逸防再漏。
+    """
+
+    def test_schema_properties_match_pydantic_fields(self):
+        from emotionai_pro.schema_validator import ConfigValidator
+        pydantic_fields = set(PluginConfig.model_fields)
+        schema_fields = set(ConfigValidator.CONFIG_SCHEMA["properties"])
+        missing = sorted(pydantic_fields - schema_fields)
+        extra = sorted(schema_fields - pydantic_fields)
+        self.assertEqual(missing, [], f"这些字段漏进 CONFIG_SCHEMA: {missing}")
+        self.assertEqual(extra, [], f"CONFIG_SCHEMA 有 PluginConfig 里不存在的键: {extra}")
+
+    def test_create_default_config_covers_all_fields(self):
+        import json
+        import tempfile
+        from emotionai_pro.schema_validator import ConfigValidator
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "cfg.json"
+            ConfigValidator.create_default_config(path)
+            written = json.loads(path.read_text(encoding="utf-8"))
+        missing = sorted(set(PluginConfig.model_fields) - set(written))
+        self.assertEqual(missing, [], f"create_default_config 漏了这些字段: {missing}")
+
+    def test_emotion_llm_fields_present_with_bounds(self):
+        from emotionai_pro.schema_validator import ConfigValidator
+        props = ConfigValidator.CONFIG_SCHEMA["properties"]
+        tb = props.get("emotion_llm_time_budget")
+        self.assertIsNotNone(tb, "CONFIG_SCHEMA 缺 emotion_llm_time_budget")
+        self.assertEqual(tb["type"], "number")
+        self.assertEqual((tb["minimum"], tb["maximum"]), (10, 300))
+        mp = props.get("emotion_llm_max_providers")
+        self.assertIsNotNone(mp, "CONFIG_SCHEMA 缺 emotion_llm_max_providers")
+        self.assertEqual(mp["type"], "integer")
+        self.assertEqual((mp["minimum"], mp["maximum"]), (1, 10))
+
 
 if __name__ == "__main__":
     unittest.main()

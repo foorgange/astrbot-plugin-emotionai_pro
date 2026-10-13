@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.1.9
+# EmotionAI Pro - 融合版情感智能插件 v4.1.10
 
 > 融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 精华，并加入「智能更新 · 辅助 LLM · 长期记忆 · 负好感支持 · 过渡保护」五大革新，打造**真实、渐进、可养成**的 AI 情感交互系统。
 
@@ -10,6 +10,12 @@
 ---
 
 ## 更新日志
+
+### v4.1.10（修复：性能参数与专家 LLM 参数此前改了不生效）
+
+- 修复 5 个性能参数（`cache_ttl` / `cache_max_size` / `auto_save_interval` / `max_dirty_keys` / `backup_retention_days`）**在 WebUI 里改了不生效**的问题：它们此前漏出了 `base_mapping` 白名单，且被一段硬编码默认值拍平，用户保存的值永远到不了插件配置。现已真正接线，界面调整会立即作用于缓存容量、自动保存节奏与备份清理；
+- 补齐 `emotion_llm_time_budget` / `emotion_llm_max_providers` 在配置校验架构（`CONFIG_SCHEMA` + `create_default_config`）中的定义——顶层是 `additionalProperties: False`，漏字段会让含有这些键的配置被判非法；
+- 5 个性能参数的默认值与此前硬编码值完全一致，没有在界面调过参数的机器人行为无任何变化。
 
 ### v4.1.9（修复：图片格式守卫开关此前无法关闭）
 

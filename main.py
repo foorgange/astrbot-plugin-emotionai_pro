@@ -47,7 +47,7 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.9")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.10")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -228,7 +228,14 @@ class EmotionAIProPlugin(Star):
             "secondary_llm_model": "secondary_llm_model",
             "emotion_llm_time_budget": "emotion_llm_time_budget",
             "emotion_llm_max_providers": "emotion_llm_max_providers",
-            "bot_name": "bot_name"
+            "bot_name": "bot_name",
+            # v4.1.10：5 个性能参数真正接线。此前它们漏出 base_mapping，
+            # 且被下方一段硬编码默认值拍平——WebUI 里改了永远不生效。
+            "cache_ttl": "cache_ttl",
+            "cache_max_size": "cache_max_size",
+            "auto_save_interval": "auto_save_interval",
+            "max_dirty_keys": "max_dirty_keys",
+            "backup_retention_days": "backup_retention_days"
         }
         
         for raw_key, config_key in base_mapping.items():
@@ -236,15 +243,6 @@ class EmotionAIProPlugin(Star):
                 config_dict[config_key] = getattr(raw_config, raw_key)
             elif raw_key in raw_config:
                 config_dict[config_key] = raw_config[raw_key]
-        
-        # 设置性能配置默认值
-        config_dict.update({
-            "cache_ttl": 300,
-            "cache_max_size": 1000,
-            "auto_save_interval": 60,
-            "max_dirty_keys": 1000,
-            "backup_retention_days": 7
-        })
 
         # 用模型字段表过滤未知键，避免用户配置里的多余项触发 ValidationError
         known_fields = set(PluginConfig.model_fields)

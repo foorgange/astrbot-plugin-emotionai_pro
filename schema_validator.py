@@ -68,6 +68,11 @@ class ConfigValidator:
             "enable_secondary_llm": {"type": "boolean"},
             "secondary_llm_provider": {"type": "string"},
             "secondary_llm_model": {"type": "string"},
+            # v4.1.10：情感分析 LLM 的时间预算与备选个数（补漏）。
+            # 顶层是 additionalProperties=False，漏掉这两个键会让
+            # 含有它们的配置文件在严格校验下被判非法。
+            "emotion_llm_time_budget": {"type": "number", "minimum": 10, "maximum": 300},
+            "emotion_llm_max_providers": {"type": "integer", "minimum": 1, "maximum": 10},
             "bot_name": {"type": "string"},
             "cache_ttl": {"type": "integer", "minimum": 1},
             "cache_max_size": {"type": "integer", "minimum": 10},
@@ -165,6 +170,8 @@ class ConfigValidator:
             "enable_secondary_llm": True,
             "secondary_llm_provider": "",
             "secondary_llm_model": "",
+            "emotion_llm_time_budget": 45.0,
+            "emotion_llm_max_providers": 3,
             "bot_name": "",
             "cache_ttl": 300,
             "cache_max_size": 1000,
