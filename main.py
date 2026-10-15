@@ -47,7 +47,12 @@ _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECA
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
 _EMOTION_SHUTDOWN_GRACE = 3.0
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.12")
+# 流式模式下「状态面板」的暂存键（v4.1.13）。
+# on_llm_response 里追加到 completion_text 的状态面板会被 respond stage
+# 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
+_STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
+
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.13")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -363,50 +368,111 @@ class EmotionAIProPlugin(Star):
         return event.unified_msg_origin if self.config.session_based else None
     
     def _get_message_text(self, event: AstrMessageEvent) -> str:
-        """获取消息文本 - 优化版本"""
+        """获取消息文本 - 优化版本
+
+        ⚠️ v4.1.13：**不再回退到 `str(message_obj)`**（线上实锤的垃圾泄漏）。
+
+        框架的 AstrBotMessage 并没有 extract_plain_text / get_plain_text
+        方法，旧实现在 message_str 为空时（纯图片、卡片、戳一戳等非文本
+        消息）落到 `str(message_obj)`，把整个消息对象——含 raw_message、
+        原始图片 URL、发送者信息——的 dict repr 当作用户消息返回。后果：
+          · /心情 的「最近三次变化」显示「听到『{'timestamp'…』」；
+          · 长期记忆里存进几千字符的垃圾；
+          · 情感分析提示词被垃圾撑大（线上实测 3283 字符）；
+          · INFO 日志刷屏并泄漏原始图片 URL。
+
+        现在非文本消息按消息链概要返回占位描述（如「[图片] [图片]」），
+        与框架自身的 _outline_chain 同一思路；取不到任何内容时返回空串，
+        由调用方按「无文本输入」处理（情感分析走兜底、心情无信号）。
+        """
         try:
             # 方法1: 直接使用 message_str 属性
             if hasattr(event, 'message_str') and event.message_str:
                 text = event.message_str.strip()
                 if text:
-                    logger.debug(f"从 message_str 获取消息: '{text}'")
                     return text
-        
-            # 方法2: 从 message_obj 中提取
-            if hasattr(event, 'message_obj') and event.message_obj:
-                message_obj = event.message_obj
-                # 尝试不同的提取方法
-                if hasattr(message_obj, 'extract_plain_text'):
-                    text = message_obj.extract_plain_text()
-                    if text and text.strip():
-                        logger.debug(f"从 message_obj.extract_plain_text 获取消息: '{text}'")
-                        return text.strip()
-                elif hasattr(message_obj, 'get_plain_text'):
-                    text = message_obj.get_plain_text()
-                    if text and text.strip():
-                        logger.debug(f"从 message_obj.get_plain_text 获取消息: '{text}'")
-                        return text.strip()
-                else:
-                    # 直接转换为字符串
-                    text = str(message_obj)
-                    if text and text.strip():
-                        logger.debug(f"从 message_obj 字符串转换获取消息: '{text}'")
-                        return text.strip()
-        
+
+            # 方法2: 从消息链提取文本/占位描述（替代旧的 str(message_obj)）
+            text = self._extract_text_from_chain(event)
+            if text:
+                return text
+
             # 方法3: 检查其他可能的属性
             if hasattr(event, 'get_message_str'):
                 text = event.get_message_str()
                 if text and text.strip():
-                    logger.debug(f"从 get_message_str 获取消息: '{text}'")
                     return text.strip()
-        
-            # 如果以上都失败，记录详细的警告
-            logger.warning(f"无法提取消息文本，可用属性: {[attr for attr in dir(event) if not attr.startswith('_')]}")
+
             return ""
-        
+
         except Exception as e:
             logger.error(f"获取消息文本失败: {e}")
             return ""
+
+    # 消息链段类型 → 占位描述（仅用于非文本段，让下游知道「有但非文字」）
+    _SEGMENT_PLACEHOLDERS = {
+        'plain': '',
+        'image': '[图片]',
+        'face': '[表情]',
+        'at': '[At]',
+        'atall': '[At全体成员]',
+        'reply': '[回复]',
+        'forward': '[转发消息]',
+        'node': '[转发消息]',
+        'nodes': '[转发消息]',
+        'record': '[语音]',
+        'video': '[视频]',
+        'file': '[文件]',
+        'json': '[卡片]',
+        'poke': '[戳一戳]',
+        'shake': '[窗口抖动]',
+        'dice': '[魔法表情]',
+        'rps': '[魔法表情]',
+    }
+
+    @classmethod
+    def _extract_text_from_chain(cls, event: AstrMessageEvent) -> str:
+        """从 event.message_obj.message 提取文本；非文本段标记为占位描述
+
+        任何异常都返回空串——提取失败不该比返回垃圾更好，也不能炸断
+        消息链路。段类型取不到时用类型名兜底判定。
+        """
+        try:
+            message_obj = getattr(event, 'message_obj', None)
+            if message_obj is None:
+                return ""
+            segments = getattr(message_obj, 'message', None)
+            if not segments:
+                return ""
+
+            parts = []
+            for seg in segments:
+                seg_type = str(getattr(seg, 'type', '')).split('.')[-1].lower()
+                placeholder = cls._SEGMENT_PLACEHOLDERS.get(seg_type)
+                if placeholder is None:
+                    # 未知段类型：用类型名兜底，绝不回退 str(整个消息对象)
+                    placeholder = f'[{seg_type or "未知段"}]'
+                if placeholder:
+                    parts.append(placeholder)
+                else:
+                    text = (getattr(seg, 'text', '') or '').strip()
+                    if text:
+                        parts.append(text)
+            return ' '.join(parts).strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _log_excerpt(text: str, limit: int = 50) -> str:
+        """日志用的消息摘要：压缩空白、超长截断（v4.1.13）
+
+        情感更新的调试日志只关心「大致内容」，整条消息打 INFO 既刷屏
+        又可能泄漏长文/卡片内容，统一截断到 50 字符。
+        """
+        cleaned = " ".join((text or "").split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit] + "…"
 
     def _get_raw_config(self):
         """返回原始 AstrBotConfig（供落盘持久化）"""
@@ -800,6 +866,27 @@ class EmotionAIProPlugin(Star):
         # on_llm_response 里对 completion_text 的过滤不会执行。
         self._install_streaming_filter(event)
 
+    @staticmethod
+    def _is_streaming_event(event: AstrMessageEvent) -> bool:
+        """判断本次回复是否处于流式输出路径（v4.1.13）
+
+        判据是 event 当前 result 的内容类型：流式路径下 process stage
+        会先把 STREAMING_RESULT 设上再消费流，on_llm_response 恰在流
+        被消费期间触发，此时读到的就是 STREAMING_RESULT；非流式路径
+        （含平台不支持流式且策略为 turn_off 的退化）读到的是 LLM_RESULT
+        或空。取不到结果时按非流式处理（保持旧行为）。
+        """
+        try:
+            result = event.get_result()
+            if result is None:
+                return False
+            content_type = getattr(result, "result_content_type", None)
+            if content_type is None:
+                return False
+            return str(getattr(content_type, "name", content_type)) == "STREAMING_RESULT"
+        except Exception:
+            return False
+
     def _install_streaming_filter(self, event: AstrMessageEvent) -> None:
         """包装本次事件的 send_streaming，在文本推送给平台前清除控制标记。
 
@@ -820,6 +907,11 @@ class EmotionAIProPlugin(Star):
             本方法只修改传给平台适配器的 MessageChain，不触碰
             agent_runner 内部的 completion_text，因此 on_llm_response
             里的情感更新触发判断（search 原始标记）仍然正常工作。
+
+        v4.1.13 起兼负「状态面板」的流式尾部投递：on_llm_response 在流式
+        路径下会把 /状态显示 的面板暂存进 event extras（completion_text
+        的追加会被 respond stage 丢弃），由本生成器 flush 时读出并
+        追加到流的最后（见 _STATUS_PANEL_EXTRA_KEY）。
         """
         # 同一事件可能触发多次（工具调用多轮），只包装一次
         if event.get_extra("_emotionai_stream_filter_installed"):
@@ -864,6 +956,13 @@ class EmotionAIProPlugin(Star):
 
             # 收尾：释放窗口内暂扣的残余内容
             tail = f.flush()
+            # v4.1.13：流式模式下把「状态面板」追加到流尾部。
+            # on_llm_response 在流被消费期间触发，此时暂存键已写好；
+            # 取到即清（一次性），异常/未安装净化器时静默跳过。
+            status_panel = event.get_extra(_STATUS_PANEL_EXTRA_KEY)
+            if status_panel:
+                event.set_extra(_STATUS_PANEL_EXTRA_KEY, None)
+                tail = f"{tail}\n\n{status_panel}" if tail else status_panel
             if tail:
                 yield MessageChain().message(tail)
 
@@ -1203,10 +1302,12 @@ class EmotionAIProPlugin(Star):
         original_text = resp.completion_text
         user_message = self._get_message_text(event)
 
+        # v4.1.13：消息内容日志只打截断摘要。此前整条消息（含长文与
+        # 非文本消息的完整 repr）按 INFO 全量输出，既刷屏又泄漏内容。
         logger.info(f"[DEBUG] ==== 开始智能情感更新 ====")
         logger.info(f"[DEBUG] 用户: {user_key}")
-        logger.info(f"[DEBUG] 用户消息: '{user_message}'")
-        logger.info(f"[DEBUG] AI回复内容: '{original_text}'")
+        logger.info(f"[DEBUG] 用户消息: '{self._log_excerpt(user_message)}'")
+        logger.info(f"[DEBUG] AI回复内容: '{self._log_excerpt(original_text)}'")
 
         # 获取当前状态
         state = await self.user_manager.get_user_state(user_key)
@@ -1255,10 +1356,20 @@ class EmotionAIProPlugin(Star):
 
         # 状态展示：必须在回复发出前追加到 resp.completion_text。
         # 此处反映的是本轮更新前的心情（数值更新在后台任务完成时才生效）。
+        #
+        # ⚠️ v4.1.13：流式模式下追加到 completion_text **永远送不达用户**——
+        # 框架 respond stage 明确丢弃 STREAMING_FINISH（防流式结束后重复
+        # 发送），状态面板只活在非流式路径。因此流式模式改为把面板暂存
+        # 到 event extras，由已安装的流式净化器在流尾部追加（见
+        # _install_streaming_filter 的 flush 分支），非流式模式走原路径。
         if state.show_status and needs_update and self.config.global_privacy_level > PrivacyLevel.FULL_SECRET:
             status_text = self._format_emotional_state(state)
             status_text = self._sanitize_ai_text(status_text)
-            resp.completion_text += f"\n\n{status_text}"
+            if self._is_streaming_event(event):
+                event.set_extra(_STATUS_PANEL_EXTRA_KEY, status_text)
+                logger.info("[DEBUG] 流式模式：状态面板已转入流式尾部追加")
+            else:
+                resp.completion_text += f"\n\n{status_text}"
 
         logger.info(f"[DEBUG] 当前状态（分析前）- 好感:{state.favor}, 亲密:{state.intimacy}")
         logger.info(f"[DEBUG] 当前态度（分析前）: '{state.descriptions.attitude}', 关系: '{state.descriptions.relationship}'")
