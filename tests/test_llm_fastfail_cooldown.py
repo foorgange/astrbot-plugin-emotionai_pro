@@ -17,12 +17,19 @@
    （23:45:00 实锤触发后再无一条 llm_analysis）。
    修复：禁用改为「冷却」，记录 `_llm_disabled_at`，超过
    `LLM_CIRCUIT_COOLDOWN_SECONDS` 自动恢复一次探测。
+
+3. **冷却被消息流「续期」（2026-10-14 深夜实锤，v4.1.12 修复）**：禁用期间每条消息
+   仍会走到失败分支，`_llm_failures` 只增不减，导致每次都刷新 `_llm_disabled_at`
+   —— 持续聊天时 600s 冷却永远到期不了（线上 14:46 禁用直到 15:02 已 809s 仍不恢复），
+   只有群静默超过 10 分钟才自愈。修复：失败计数仅在可用态累计；禁用分支加
+   `and self._llm_available` 守卫，只在刚进入禁用时记时间戳 + 打日志。
 """
 import asyncio
 import os
 import sys
 import time
 import unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tests.astrbot_stub  # noqa: F401
@@ -335,6 +342,84 @@ class TestCircuitEndToEnd(unittest.TestCase):
         self.assertEqual(e._llm_failures, 0)
 
 
+# ==================== 冷却不被消息流续期（v4.1.12） ====================
+
+
+class TestCooldownNotRefreshedByTraffic(unittest.TestCase):
+    """禁用期间的消息流不得刷新冷却计时器
+
+    线上实锤（2026-10-14）：14:46:47 禁用后，14:47:49→15:02:37 每条消息都重打
+    禁用 ERRO；15:00:16 距首次禁用已 809s（远超 600s 冷却）仍不恢复，且期间
+    没有任何 LLM 尝试。根因：禁用期间每条消息仍走失败分支，`_llm_failures`
+    只增不减，导致每次都执行 `_llm_disabled_at = time.time()`——冷却被不断
+    续期，只有群静默超过 10 分钟才自愈。
+    """
+
+    def _round(self, e, msg):
+        return asyncio.run(
+            e.analyze_and_update_emotion("u1", msg, "回复", _state(), "umo-x")
+        )
+
+    def _disabled_expert(self):
+        p = RaisingProvider("vendor/a")
+        cache = FakeCache()
+        e = _expert([p], cache=cache)
+        e.llm_retry_delay = 0
+        for i in range(3):
+            self._round(e, f"消息{i}")
+        self.assertFalse(e._llm_available)
+        return e
+
+    def test_traffic_during_cooldown_does_not_refresh_timestamp(self):
+        """冷却期内的每条消息都不得刷新 _llm_disabled_at"""
+        e = self._disabled_expert()
+        disabled_at = e._llm_disabled_at
+        for i in range(5):
+            self._round(e, f"冷却期消息{i}")
+        self.assertEqual(e._llm_disabled_at, disabled_at)
+
+    def test_failure_counter_frozen_while_disabled(self):
+        """禁用期间不累加失败计数（计数只反映可用状态下的连续失败）"""
+        e = self._disabled_expert()
+        for i in range(5):
+            self._round(e, f"冷却期消息{i}")
+        self.assertEqual(e._llm_failures, 3)
+
+    def test_disable_error_not_repeated_during_cooldown(self):
+        """每次进入禁用只打一条 ERRO；冷却期内的消息不得重复刷屏"""
+        e = self._disabled_expert()
+        with mock.patch("emotionai_pro.emotion_expert.logger") as m:
+            for i in range(4):
+                self._round(e, f"冷却期消息{i}")
+        repeated = [
+            c for c in m.error.call_args_list if "暂时禁用LLM分析" in str(c)
+        ]
+        self.assertEqual(repeated, [])
+
+    def test_steady_traffic_still_recovers_after_cooldown(self):
+        """持续消息流（条间隔 < 冷却时长）下，冷却仍从首次禁用起算
+
+        旧代码在此场景永远恢复不了：每条消息都把 _llm_disabled_at 刷成当前时刻。
+        用可拨动的时钟模拟 7 条消息、每条间隔 90s（总跨度 630s > 600s，任何
+        相邻两条间隔都 < 600s）——只有最后一条应触发恢复探测。
+        """
+        e = self._disabled_expert()
+        first_disable = e._llm_disabled_at
+        ok = KwargsProvider("vendor/a")
+        e.context = FakeContext([ok])
+
+        clock = {"t": first_disable}
+        fake_time = mock.Mock()
+        fake_time.time.side_effect = lambda: clock["t"]
+        updates = None
+        with mock.patch("emotionai_pro.emotion_expert.time", fake_time):
+            for i in range(7):
+                clock["t"] = first_disable + 90 * (i + 1)
+                updates = self._round(e, f"持续消息{i}")
+        self.assertEqual(updates["source"], "llm_analysis")
+        self.assertEqual(ok.calls, 1)
+
+
 # ==================== 源码级硬约束 ====================
 
 
@@ -372,6 +457,17 @@ class TestSourceConstraints(unittest.TestCase):
     def test_disable_branch_records_timestamp(self):
         src = self._read_source("emotion_expert.py")
         self.assertIn("self._llm_disabled_at = time.time()", src)
+
+    def test_disable_branch_guarded_by_availability(self):
+        """禁用分支必须带 `and self._llm_available` 守卫（v4.1.12）
+
+        没有这个守卫，禁用期间每条消息都会刷新 _llm_disabled_at，
+        600s 冷却在持续消息流下永远到期不了（线上实锤 809s 仍不恢复）。
+        """
+        src = self._read_source("emotion_expert.py")
+        self.assertIn(
+            "if self._llm_failures >= 3 and self._llm_available:", src
+        )
 
 
 if __name__ == "__main__":

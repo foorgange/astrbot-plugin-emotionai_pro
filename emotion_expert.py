@@ -168,10 +168,16 @@ class EmotionAnalysisExpert:
                 
             else:
                 # LLM分析失败或不可用
-                self._llm_failures += 1
+                # ⚠️ 仅在「本次确实尝试了 LLM」时累计失败：禁用期间会跳过 LLM
+                # 调用直达此处，若也计数会让 _llm_failures 只增不减，进而每条消息
+                # 都刷新禁用时刻，600s 冷却永远到期不了（线上实锤：禁用 809s 后仍未恢复）。
+                if self._llm_available:
+                    self._llm_failures += 1
                 
                 # 如果连续失败超过3次，暂时禁用LLM
-                if self._llm_failures >= 3:
+                # ⚠️ and self._llm_available：只在「刚进入禁用」时记时间戳+打日志；
+                # 已在禁用态时不得刷新 _llm_disabled_at，否则冷却被消息流不断续期。
+                if self._llm_failures >= 3 and self._llm_available:
                     self._llm_available = False
                     self._llm_disabled_at = time.time()
                     logger.error(
