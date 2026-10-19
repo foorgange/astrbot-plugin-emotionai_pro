@@ -15,6 +15,106 @@
 
 ---
 
+## 这是什么
+
+EmotionAI Pro 是一个给 AstrBot 使用的「情感与关系」插件。它不改变 bot 的人设，而是在对话前后维护一套会变化的好感度、亲密度、情绪与关系阶段，再把这些状态作为参考注入回复，让角色对同一个人的态度能随着相处逐渐变化。
+
+它适合群聊互动、私聊陪伴、角色扮演和剧情养成：高好感时更愿意记住细节、主动关心；好感降低时会更冷淡、更有边界感。插件不替代 AstrBot 的会话历史，也不会改写框架的数据库——长期记忆、用户状态和心情都保存在插件自己的数据目录中。
+
+### 项目背景
+
+本项目基于原作者 **asakiyoshi** 的 EmotionAI Pro 修复维护，并融合 [EmotionAI](https://github.com/tengtian3/astrbot-plugin-emotionai) 与 [FavourPro](https://github.com/Catfish872/astrbot_plugin_favourpro) 的思路。当前由 **foorgange** 持续维护，重点放在：好感度真正参与记忆与态度、心情对回复的自然影响、长期运行的稳定性，以及升级时不破坏已有数据。
+
+### 设计边界
+
+- 情感状态是「数值 + 提示词」的模拟，不是真实意识；它的价值是让角色表现更连贯，而不是宣称 bot 真的有感情。
+- 情感分析会调用 LLM；辅助模型不可用时会走本地兜底，不阻塞主回复。
+- 不修改 AstrBot 核心，不接管 `system_prompt`；动态内容只追加在请求尾部，避免破坏前缀缓存。
+
+---
+
+## 安装与部署
+
+### 环境要求
+
+| 项目 | 要求 |
+|---|---|
+| AstrBot | 4.x（开发验证：4.26.8 / 4.28.0） |
+| Python | 3.8 及以上 |
+| 必需依赖 | `pydantic>=2.0.0`、`aiofiles>=23.0.0` |
+| 可选依赖 | `psutil`、`watchfiles`、`xxhash`（缺失时自动降级，不影响启动） |
+| 模型 | 一个主对话模型；辅助情感分析模型可选 |
+| 数据库 | 不需要额外数据库，使用本地 JSON |
+
+### 方式一：AstrBot 官方插件市场安装（推荐）
+
+1. 启动 AstrBot，打开 WebUI（默认 `http://127.0.0.1:6185`）。
+2. 进入「插件市场 / 插件商店」，搜索 **EmotionAI Pro**，或搜索包名 **`astrbot_plugin_emotionai_pro`**。
+3. 点击安装，等待插件文件和依赖下载完成。
+4. 在插件配置中至少设置 `bot_name`（你的角色名）；需要更强的情感分析时可再指定辅助 LLM。
+5. 保存配置，重启 AstrBot 或在 WebUI 中重载插件。
+6. 在聊天中发送 `/好感度` 或 `/心情`，确认插件已加载。
+
+> 如果插件市场暂时搜不到，或依赖没有自动装好，可以用下面的手动方式；插件本身不依赖任何私有服务。
+
+### 方式二：手动安装
+
+```bash
+# 进入 AstrBot 的插件目录（按你的实际安装路径调整）
+cd AstrBot/data/plugins
+
+git clone https://github.com/foorgange/astrbot-plugin-emotionai_pro.git
+
+# 安装依赖（使用 AstrBot 所在 Python 环境）
+python -m pip install -r astrbot-plugin-emotionai_pro/requirements.txt
+```
+
+安装后重启 AstrBot。若使用 Docker，在容器内执行：
+
+```bash
+docker exec -it astrbot bash
+cd /AstrBot/data/plugins
+git clone https://github.com/foorgange/astrbot-plugin-emotionai_pro.git
+python3 -m pip install -r astrbot-plugin-emotionai_pro/requirements.txt
+exit
+
+# 回到宿主机重启
+docker restart astrbot
+```
+
+### 首次配置建议
+
+| 配置项 | 建议 |
+|---|---|
+| `bot_name` | 必填，写你的角色名；留空会尝试从 AstrBot persona 自动提取 |
+| `enable_secondary_llm` | 建议开启；没有辅助模型时可用主模型兜底 |
+| `secondary_llm_provider` / `secondary_llm_model` | 可选；指定一个稳定、便宜、响应快的模型 |
+| `session_based` | 想让每个群聊/私聊独立计算情感时开启 |
+| `mood_influence_strength` | 心情影响强度，默认 `0.7`；想更明显可调到 `0.85~1.0` |
+| `enable_memory_recall` | 是否注入具体记忆片段；关闭后只注入关系统计 |
+
+### 升级、备份与卸载
+
+- **升级**：优先用插件市场更新；手动安装可 `git pull` 后重启。升级前建议备份 `data/plugin_data/astrbot_plugin_emotionai_pro/`。
+- **备份**：管理员可发送 `/备份数据`；数据同时保存在插件数据目录的 `backups/` 下。
+- **卸载**：在插件市场卸载，或删除 `data/plugins/astrbot_plugin_emotionai_pro/`；插件数据默认保留，确认不再需要后再删除 `data/plugin_data/astrbot_plugin_emotionai_pro/`。
+
+### 数据与隐私
+
+插件数据默认位于：
+
+```text
+data/plugin_data/astrbot_plugin_emotionai_pro/emotionai_pro/
+├── user_emotion_data.json   # 好感度、亲密度、阶段、描述
+├── long_term_memory.json    # 长期记忆片段
+├── global_mood.json         # 全局心情
+└── backups/                 # 自动/手动备份
+```
+
+这些文件只保存在本地；插件不会额外上传到第三方服务。使用辅助 LLM 做情感分析时，对话片段会按 AstrBot 的模型配置发送给对应 provider，请按自己的隐私要求选择模型与网络环境。`global_privacy_level` 控制的是聊天中的展示程度，不改变本地存档内容。
+
+---
+
 ## 更新日志
 
 ### v4.2.0（当前版本，2026-10-20：好感度驱动的记忆与态度 + 心情增强）
