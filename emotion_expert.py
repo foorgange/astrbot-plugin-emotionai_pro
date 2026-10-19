@@ -14,6 +14,15 @@ from astrbot.api import logger
 from .cache import ShardedTTLCache
 from .models import EnhancedEmotionalState
 from .constants import TimeConstants
+from .description_diversity import (
+    MAX_DESCRIPTION_LENGTH,
+    description_seed,
+    ensure_diverse,
+    pick_angle,
+    pick_fallback,
+    recent_descriptions,
+    sanitize_description,
+)
 
 class ProviderHealthTracker:
     """备选 provider 的健康度追踪：按近期成功率动态排序（v4.1.14）
@@ -793,8 +802,6 @@ class EmotionAnalysisExpert:
                 "anger": 1,
                 "disgust": 1
             }
-            relationship = "关系紧张"
-            attitude = "谨慎回应"
             
         elif pos_weight > neg_weight and pos_weight > 0:
             # 正面互动
@@ -807,8 +814,6 @@ class EmotionAnalysisExpert:
                 "trust": 1,
                 "anticipation": 1
             }
-            relationship = "友好的对话伙伴"
-            attitude = "愉快开放的交流"
             
         elif int_weight > 0:
             # 亲密互动
@@ -819,8 +824,6 @@ class EmotionAnalysisExpert:
                 "trust": 2,
                 "anticipation": 1
             }
-            relationship = "亲密的朋友"
-            attitude = "温暖关怀的交流"
             
         else:
             # 中性互动 - 小幅正面
@@ -829,9 +832,22 @@ class EmotionAnalysisExpert:
                 "intimacy": 0,
                 "anticipation": 1
             }
-            relationship = "平常的交流对象"
-            attitude = "标准回应"
         
+        # v4.1.15：兜底文案不再写死。按当前关系档位挑一条，并避开上一版
+        # 与最近用过的描述；同一用户下次触发时 update_count 不变（兜底文本
+        # 不会走 update_*），所以再加时间片做轮换，避免连续失败时原地复读。
+        seed = description_seed(state) + int(time.time() // 300)
+        relationship = pick_fallback(
+            "relationship", state.favor, state.intimacy, seed,
+            avoid=[getattr(getattr(state, "descriptions", None), "relationship", "")]
+            + recent_descriptions(state, "relationship"),
+        )
+        attitude = pick_fallback(
+            "attitude", state.favor, state.intimacy, seed + 1,
+            avoid=[getattr(getattr(state, "descriptions", None), "attitude", "")]
+            + recent_descriptions(state, "attitude"),
+        )
+
         return {
             **emotion_updates,
             "relationship_text": relationship,
@@ -841,6 +857,9 @@ class EmotionAnalysisExpert:
     def _generate_emergency_fallback(self, user_message: str, ai_response: str, state: EnhancedEmotionalState) -> Dict[str, Any]:
         """紧急后备方案 - 只在完全失败时使用"""
         # 默认产生小幅正面情感变化
+        #
+        # v4.1.15：文本描述同样走分档兜底池，不再写死「正常关系/友好交流」。
+        seed = description_seed(state) + int(time.time() // 300)
         return {
             'favor': 1,
             'intimacy': 1,
@@ -852,14 +871,45 @@ class EmotionAnalysisExpert:
             'disgust': 0,
             'anger': 0,
             'anticipation': 1,
-            'relationship_text': "正常关系",
-            'attitude_text': "友好交流"
+            'relationship_text': pick_fallback(
+                "relationship", state.favor, state.intimacy, seed,
+                avoid=[getattr(getattr(state, "descriptions", None), "relationship", "")],
+            ),
+            'attitude_text': pick_fallback(
+                "attitude", state.favor, state.intimacy, seed + 1,
+                avoid=[getattr(getattr(state, "descriptions", None), "attitude", "")],
+            ),
         }
 
     def _build_emotion_analysis_prompt(self, user_msg: str, bot_msg: str, state: EnhancedEmotionalState) -> str:
-        """构建生动的情感分析提示词"""
+        """构建生动的情感分析提示词
+
+        v4.1.15：关系/态度描述去同质化。
+        - 给模型上一版描述和最近用过的描述，明确要求别重复；
+        - 每轮轮换一个「描写角度」，逼它从具体细节写而不是从人设词库写；
+        - 显式列出线上高频套话与空话，降低「傲娇 / 互怼 / 日常」的复读率。
+        """
         # 使用 bot 人设名代替"AI"字样（未解析到时兜底"AI"，写入/显示层会再次清洗）
         bot_name = (self.bot_name_provider() if self.bot_name_provider else "AI") or "AI"
+        stage_name = getattr(state, "relationship_stage", "") or "未知"
+        previous_relationship = sanitize_description(
+            getattr(getattr(state, "descriptions", None), "relationship", ""),
+            MAX_DESCRIPTION_LENGTH,
+        ) or "（还没有）"
+        previous_attitude = sanitize_description(
+            getattr(getattr(state, "descriptions", None), "attitude", ""),
+            MAX_DESCRIPTION_LENGTH,
+        ) or "（还没有）"
+        recent_relationship = recent_descriptions(state, "relationship", limit=4)
+        recent_attitude = recent_descriptions(state, "attitude", limit=4)
+        recent_relationship_text = "、".join(
+            f"「{item}」" for item in recent_relationship
+        ) or "无"
+        recent_attitude_text = "、".join(
+            f"「{item}」" for item in recent_attitude
+        ) or "无"
+        angle = pick_angle(state)
+
         return f"""你是一个情感分析专家，请分析以下对话的情感变化，输出JSON格式的分析结果。
 
 对话内容：
@@ -869,8 +919,13 @@ class EmotionAnalysisExpert:
 当前用户情感状态：
 - 好感度：{state.favor}（范围：-100到100）
 - 亲密度：{state.intimacy}（范围：0到100）
+- 关系阶段：{stage_name}
 - 互动次数：{state.stats.total_count}次
 - 正面互动比例：{state.stats.positive_ratio:.1f}%
+- 上一版关系描述：「{previous_relationship}」
+- 上一版态度描述：「{previous_attitude}」
+- 最近用过的关系描述：{recent_relationship_text}
+- 最近用过的态度描述：{recent_attitude_text}
 
 【情感数值变化范围】
 请为以下情感维度分配-2到+2之间的整数值：
@@ -885,18 +940,24 @@ class EmotionAnalysisExpert:
 - 愤怒 (anger): 生气、愤怒的程度
 - 期待 (anticipation): 期待、盼望的程度
 
-【关系描述要求】
-- 用不超过 20 个字概括双方的关系性质，保持生动有趣
-- 考虑当前好感度、亲密度和互动历史
-- 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
-- 保持自然、符合人类社交常识
-- 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样
+【关系与态度的分工】
+- relationship 写「双方关系的具体样子」：共同经历、身份、距离、最近的变化。写成名词性短语，不要只堆性格形容词。
+- attitude 写「{bot_name} 这一轮具体怎么回应」：语气、动作、先做什么后做什么。写成动词性短语，不能和 relationship 是同一个意思。
+- 两条都要短，各不超过 20 个字，不要带「关系：」「态度：」前缀。
 
-【态度描述要求】
-- 用不超过 20 个字描述 {bot_name} 对用户的回应态度或互动方式
-- 体现情感倾向和互动风格
-- 必须简短！禁止使用逗号连接的长句，禁止超过 20 字
-- 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样
+【本轮描写角度】
+{angle}。只取一个角度写，不要把角度名写进结果。
+
+【去套话】
+- 下面这些词在历史描述里已经用得过多了：傲娇、撒娇、俏皮、互怼、损友、欢喜冤家、嘴硬、宠溺、互宠、互撩、互损、斗嘴、互闹、卖萌。除非本轮对话确实出现了对应行为，否则不要用；一条描述里最多出现一个。
+- 禁止「友好交流」「正常关系」「关系融洽」「相处愉快」「陌生人」「中立」这类空话或默认占位。
+- 不要照抄上一版，也不要照抄下面的示例；如果这一轮关系确实没有变化，可以保留上一版的说法，但不要为了换词而硬编。
+- 不要每句都写「{bot_name}与用户」，能省主语就省，或用「你 / 我」。
+- 若提到双方，用「{bot_name}」称呼 bot 一方，不要出现"AI"字样。
+
+【写法示例（只示范颗粒度，不要照抄）】
+- 关系：一起蹲开播的老观众 / 刚吵完还没台阶下的熟人 / 互相投喂零食的饭搭子
+- 态度：嘴上说不管，还是把链接发来了 / 没接话，只发了个问号 / 认真解释了三遍才放心
 
 【心情变化描述要求】（对应输出字段 mood_reason）
 - 用不超过 20 个字，描述 {bot_name} 此刻的心情变化，像随口一说
@@ -989,16 +1050,17 @@ class EmotionAnalysisExpert:
                 # 这个开关以前是死配置：关掉它，态度/关系描述仍会由 LLM 生成。
                 # 现在关闭时**不改写**这两个字段（留空即被下游替换为当前值），
                 # 于是用户自己用 /设置态度、/设置关系 设的文案不会被 AI 覆盖。
+                #
+                # v4.1.15：开启时再走一道 ensure_diverse——LLM 返回空字段、
+                # 套话堆砌（傲娇+互怼+日常）或与上一版近重复时，换成按关系
+                # 档位挑选的兜底描述，不再写死「正常关系 / 友好交流」。
                 if self.enable_ai_text_generation:
-                    if 'relationship' in data and data['relationship']:
-                        updates['relationship_text'] = str(data['relationship']).strip()[:20]  # 限制长度
-                    else:
-                        updates['relationship_text'] = "正常关系"
-
-                    if 'attitude' in data and data['attitude']:
-                        updates['attitude_text'] = str(data['attitude']).strip()[:20]  # 限制长度
-                    else:
-                        updates['attitude_text'] = "友好交流"
+                    updates['relationship_text'] = ensure_diverse(
+                        'relationship', data.get('relationship', ''), current_state,
+                    )
+                    updates['attitude_text'] = ensure_diverse(
+                        'attitude', data.get('attitude', ''), current_state,
+                    )
                 else:
                     # 保留当前描述，不覆盖。
                     # ⚠️ 参数名是 current_state（不是 state）—— 写成 state 会抛
@@ -1033,7 +1095,7 @@ class EmotionAnalysisExpert:
         
         # JSON解析失败，尝试从文本提取
         logger.error("JSON解析失败，尝试文本提取")
-        return self._extract_updates_from_text(analysis_text)
+        return self._extract_updates_from_text(analysis_text, current_state)
 
     @staticmethod
     def _sanitize_mood_reason(text: str, limit: int = 24) -> str:
@@ -1081,7 +1143,7 @@ class EmotionAnalysisExpert:
         
         return json_str
 
-    def _extract_updates_from_text(self, text: str) -> Dict[str, Any]:
+    def _extract_updates_from_text(self, text: str, current_state: Any = None) -> Dict[str, Any]:
         """从文本中提取更新信息（后备方法）"""
         updates = {
             'favor': 0,
@@ -1094,8 +1156,6 @@ class EmotionAnalysisExpert:
             'disgust': 0,
             'anger': 0,
             'anticipation': 0,
-            'relationship_text': "正常关系",
-            'attitude_text': "友好交流"
         }
         
         text_lower = text.lower()
@@ -1125,6 +1185,27 @@ class EmotionAnalysisExpert:
                     else:
                         updates[emotion] = 1 if emotion in ['favor', 'intimacy'] else 0
                     break
+
+        # v4.1.15：这条路径原先固定返回「正常关系 / 友好交流」，是最显眼
+        # 的同质化来源之一。改为按当前关系档位挑兜底文案。
+        seed = description_seed(current_state) if current_state is not None else 0
+        favor = getattr(current_state, 'favor', 0) if current_state is not None else 0
+        intimacy = getattr(current_state, 'intimacy', 0) if current_state is not None else 0
+        descriptions = getattr(current_state, 'descriptions', None)
+        updates['relationship_text'] = pick_fallback(
+            'relationship', favor, intimacy, seed,
+            avoid=[
+                getattr(descriptions, 'relationship', ''),
+                *recent_descriptions(current_state, 'relationship'),
+            ],
+        )
+        updates['attitude_text'] = pick_fallback(
+            'attitude', favor, intimacy, seed + 1,
+            avoid=[
+                getattr(descriptions, 'attitude', ''),
+                *recent_descriptions(current_state, 'attitude'),
+            ],
+        )
         
         return updates
 

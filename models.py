@@ -13,6 +13,11 @@ from astrbot.api import logger
 from .constants import EmotionConstants, TimeConstants
 from .config import AttitudeType, RelationshipStage, PrivacyLevel
 from .stage_names import get_stage_name, normalize_stage_name
+from .description_diversity import (
+    RECENT_DESCRIPTION_LIMIT,
+    push_recent,
+    sanitize_description,
+)
 
 
 def is_negative_favor(favor: Any) -> bool:
@@ -270,6 +275,11 @@ class TextDescriptions:
     last_attitude_update: float = 0
     last_relationship_update: float = 0
     update_count: int = 0
+
+    # 最近几次采用过的描述（v4.1.15，供提示词「别重复」与相似度检测）。
+    # 旧存档没有这两个键，from_dict 走默认空列表即可，不需要迁移。
+    recent_attitude: List[str] = field(default_factory=list)
+    recent_relationship: List[str] = field(default_factory=list)
     
     # 有效的态度和关系模式
     # 允许汉字、字母数字、空格、-，以及常见中文标点（，。！？、；：""''《》·）
@@ -300,13 +310,33 @@ class TextDescriptions:
         # 验证态度
         if not self.is_valid_attitude(self.attitude):
             self.attitude = "中立"
+            self.recent_attitude = []
             logger.warning(f"修复无效的态度描述: {self.attitude}")
 
         # 验证关系
         if not self.is_valid_relationship(self.relationship):
             self.relationship = "陌生人"
+            self.recent_relationship = []
             logger.warning(f"修复无效的关系描述: {self.relationship}")
-        
+
+        # 最近描述历史（v4.1.15）：旧存档没有、或手工改成非法类型时
+        # 一律收敛为空列表，不能让脏值把提示词/相似度检测带崩。
+        for kind, validator in (
+            ("attitude", self.is_valid_attitude),
+            ("relationship", self.is_valid_relationship),
+        ):
+            field_name = f"recent_{kind}"
+            raw = getattr(self, field_name, None)
+            cleaned: List[str] = []
+            if isinstance(raw, (list, tuple)):
+                for item in raw:
+                    if not isinstance(item, str):
+                        continue
+                    value = sanitize_description(item)
+                    if validator(value) and value not in cleaned:
+                        cleaned.append(value)
+            setattr(self, field_name, cleaned[-RECENT_DESCRIPTION_LIMIT:])
+
         # 验证时间戳
         current_time = time.time()
         if self.last_attitude_update > current_time:
@@ -322,6 +352,7 @@ class TextDescriptions:
         """更新态度描述"""
         if self.is_valid_attitude(new_attitude):
             self.attitude = new_attitude
+            self.recent_attitude = push_recent(self.recent_attitude, new_attitude)
             self.last_attitude_update = time.time()
             self.update_count += 1
         else:
@@ -331,6 +362,9 @@ class TextDescriptions:
         """更新关系描述"""
         if self.is_valid_relationship(new_relationship):
             self.relationship = new_relationship
+            self.recent_relationship = push_recent(
+                self.recent_relationship, new_relationship
+            )
             self.last_relationship_update = time.time()
             self.update_count += 1
         else:
@@ -343,7 +377,9 @@ class TextDescriptions:
             'relationship': self.relationship,
             'last_attitude_update': self.last_attitude_update,
             'last_relationship_update': self.last_relationship_update,
-            'update_count': self.update_count
+            'update_count': self.update_count,
+            'recent_attitude': list(self.recent_attitude),
+            'recent_relationship': list(self.recent_relationship),
         }
 
 @dataclass
