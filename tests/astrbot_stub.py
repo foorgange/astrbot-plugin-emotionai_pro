@@ -182,6 +182,18 @@ def _install():
     class TextPart:
         def __init__(self, text=""):
             self.text = text
+            self._no_save = False
+
+        def mark_as_temp(self):
+            """与 AstrBot 4.28 的 ContentPart.mark_as_temp 对齐。"""
+            self._no_save = True
+            return self
+
+        def model_dump_for_context(self):
+            data = {"type": "text", "text": self.text}
+            if self._no_save:
+                data["_no_save"] = True
+            return data
 
     # 忠实复刻框架侧的最小行为：checkpoint 段（role=_checkpoint）不产生
     # 独立消息，而是绑定到前一条消息的 _checkpoint_after 上；

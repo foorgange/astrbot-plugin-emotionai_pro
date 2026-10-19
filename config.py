@@ -94,6 +94,20 @@ class PluginConfig(BaseModel):
     # 全局心情是否参与主对话回复生成（v4.1.6）。关闭后心情仍正常演进与
     # 展示（/心情、/查看好感），只是不再注入 LLM 请求。
     enable_mood_influence: bool = Field(default=True, description="启用心情影响回复")
+    # v4.2.0：心情影响强度（0~1）。只影响“心情倾向”的措辞强弱，不改变
+    # 主导情绪/强度字段；心情始终只能修饰关系基线，不能翻盘。
+    mood_influence_strength: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="心情对语气的影响强度"
+    )
+    # v4.2.0：心情一致记忆召回。当前心情与某条记忆情绪价一致时略加权，
+    # 让“心情低落时更容易想起旧冲突、开心时更容易想起共同好事”成立。
+    mood_memory_bias: bool = Field(default=True, description="启用心情一致的记忆召回")
+    # v4.2.0：好感度驱动的具体记忆召回（注入 user_msg/ai_response 片段）。
+    # 关闭后只注入关系统计（v4.1 行为）。
+    enable_memory_recall: bool = Field(default=True, description="启用好感度驱动的长期记忆召回")
+    memory_recall_max_items: int = Field(
+        default=6, ge=1, le=10, description="单轮最多召回几条具体记忆"
+    )
     # 心情变化原因是否由大模型生成（v4.1.8）。开启时 /心情 展示的
     # 「最近三次变化」优先使用情感分析模型生成的自然语句（人设口吻、
     # ≤20 字）；关闭、LLM 不可用或模型没返回时，自动用内置多套固定

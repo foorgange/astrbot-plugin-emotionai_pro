@@ -1,7 +1,6 @@
 # attitude_manager.py
-from typing import Dict, Any
-
 from .models import EnhancedEmotionalState
+from . import relationship_style
 
 class AttitudeRelationshipManager:
     """态度关系管理器 - 完整的原有实现"""
@@ -27,23 +26,35 @@ class AttitudeRelationshipManager:
     
     @classmethod
     def get_behavior_guidance(cls, favor: int, intimacy: int) -> str:
-        """根据好感度和亲密度获取行为指导"""
-        composite_score = favor * 0.6 + intimacy * 0.4
-        
-        if composite_score >= 75:
-            return cls.BEHAVIOR_STYLES["intimate"]
-        elif composite_score >= 40:
-            return cls.BEHAVIOR_STYLES["friendly"]
-        elif composite_score >= -10:
-            return cls.BEHAVIOR_STYLES["neutral"]
-        elif composite_score >= -50:
-            return cls.BEHAVIOR_STYLES["cold"]
-        else:
+        """根据好感度和亲密度获取行为指导。
+
+        v4.2.0：统一委托 relationship_style，避免这里和阶段/兜底文案
+        各维护一套阈值。
+        """
+        try:
+            return str(
+                relationship_style.get_profile(favor, intimacy)["behavior"]
+            )
+        except Exception:
+            composite_score = favor * 0.6 + intimacy * 0.4
+            if composite_score >= 75:
+                return cls.BEHAVIOR_STYLES["intimate"]
+            if composite_score >= 40:
+                return cls.BEHAVIOR_STYLES["friendly"]
+            if composite_score >= -10:
+                return cls.BEHAVIOR_STYLES["neutral"]
+            if composite_score >= -50:
+                return cls.BEHAVIOR_STYLES["cold"]
             return cls.BEHAVIOR_STYLES["hostile"]
-    
+
     @classmethod
     def get_tone_instruction(cls, state: EnhancedEmotionalState) -> str:
-        """根据主导情感获取语气指导"""
+        """根据主导情感 + 关系基线获取语气指导。
+
+        v4.2.0：心情/情绪只能修饰，不能压过关系基线。旧实现先看情绪，
+        低好感用户只要 joy 高一点就会拿到“愉快热情”的语气，和冷淡的
+        关系设定打架。现在按档位加一层约束。
+        """
         emotions = {
             "joy": state.emotions.joy,
             "trust": state.emotions.trust,
@@ -55,13 +66,37 @@ class AttitudeRelationshipManager:
             "anticipation": state.emotions.anticipation
         }
         dominant_emotion = max(emotions.items(), key=lambda x: x[1])
-        
+        band = relationship_style.get_band(state.favor, state.intimacy)
+        label = relationship_style.get_band_label(state.favor, state.intimacy)
+
         if dominant_emotion[1] > 30:
-            return cls.TONE_INSTRUCTIONS.get(dominant_emotion[0], "保持自然友好的语气。")
+            tone = cls.TONE_INSTRUCTIONS.get(dominant_emotion[0], "保持自然友好的语气。")
+        elif band in ("negative", "distant"):
+            tone = (
+                "保持礼貌、简洁、不过分热络的语气。"
+                if band == "distant"
+                else "保持简短、冷淡、带防备的语气。"
+            )
+        elif band == "casual":
+            tone = "保持轻松、友好但不过分亲密的语气。"
+        elif band == "close":
+            tone = "保持温和、亲近、愿意主动关心的语气。"
         else:
-            if state.favor >= 40:
-                return "保持友好积极的语气。"
-            elif state.favor >= -10:
-                return "保持中立客观的语气。"
-            else:
-                return "保持简洁冷淡的语气。"
+            tone = "保持自然、亲密、有默契的语气。"
+
+        if band == "negative":
+            return (
+                f"{tone} 当前关系档位是“{label}”：不要撒娇、不要使用亲昵"
+                "称呼，不要因为一时开心就表现得关系很好。"
+            )
+        if band == "distant":
+            return (
+                f"{tone} 当前关系档位是“{label}”：可以友好，但不要主动"
+                "套近乎，不要使用昵称或承诺超出关系的亲密。"
+            )
+        if band == "casual":
+            return (
+                f"{tone} 当前关系档位是“{label}”：可以接梗，但不要主动"
+                "提及私密细节或使用过度亲密的称呼。"
+            )
+        return tone

@@ -55,6 +55,11 @@ class ConfigValidator:
             "enable_attitude_system": {"type": "boolean"},
             # v4.1.6：全局心情是否参与主对话回复生成
             "enable_mood_influence": {"type": "boolean"},
+            # v4.2.0：心情影响强度 + 心情一致记忆召回 + 好感度驱动记忆召回
+            "mood_influence_strength": {"type": "number", "minimum": 0, "maximum": 1},
+            "mood_memory_bias": {"type": "boolean"},
+            "enable_memory_recall": {"type": "boolean"},
+            "memory_recall_max_items": {"type": "integer", "minimum": 1, "maximum": 10},
             # v4.1.8：心情变化原因是否由大模型生成（关闭走内置文案兜底）
             "enable_llm_mood_reason": {"type": "boolean"},
             # v4.1.7：图片格式守卫（拦截 SVG 等不支持的格式，避免
@@ -160,6 +165,10 @@ class ConfigValidator:
             "plugin_priority": 100000,
             "enable_attitude_system": True,
             "enable_mood_influence": True,
+            "mood_influence_strength": 0.7,
+            "mood_memory_bias": True,
+            "enable_memory_recall": True,
+            "memory_recall_max_items": 6,
             "enable_llm_mood_reason": True,
             "image_format_filter_enabled": True,
             "enable_ai_text_generation": True,

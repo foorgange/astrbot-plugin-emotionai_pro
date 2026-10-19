@@ -1,12 +1,9 @@
 # main.py
-import json
 import re
 import time
 import inspect
 import asyncio
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
-from dataclasses import asdict
+from typing import Dict, Any, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -30,6 +27,7 @@ from .emotion_expert import EmotionAnalysisExpert
 from .command_handlers import UserCommandHandler, AdminCommandHandler, DebugCommandHandler
 from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
+from . import relationship_style
 from .global_mood import (
     GlobalMood, GlobalMoodStore, apply_mood_update, compute_mood_signal,
     build_mood_change_reason, mood_trigger_excerpt, describe_mood,
@@ -52,7 +50,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.17")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.0")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -224,6 +222,10 @@ class EmotionAIProPlugin(Star):
             "global_privacy_level": "global_privacy_level",
             "enable_smart_update": "enable_smart_update",
             "enable_mood_influence": "enable_mood_influence",
+            "mood_influence_strength": "mood_influence_strength",
+            "mood_memory_bias": "mood_memory_bias",
+            "enable_memory_recall": "enable_memory_recall",
+            "memory_recall_max_items": "memory_recall_max_items",
             "enable_llm_mood_reason": "enable_llm_mood_reason",
             "image_format_filter_enabled": "image_format_filter_enabled",
             "force_update_interval": "force_update_interval",
@@ -857,9 +859,30 @@ class EmotionAIProPlugin(Star):
         # 本轮请求可见的内容。
         self._filter_unsupported_images(event, req)
 
+        # v4.2.0：先刷新关系阶段快照，再构建“关系基线 + 具体记忆 +
+        # 心情倾向”的融合上下文。所有动态内容仍然只进尾部
+        # extra_user_content_parts，不碰 system_prompt / req.contexts。
+        stage_info = self._refresh_stage_snapshot(state)
+        memory_context = await self._build_memory_context(event, state)
+
         # 构建融合的情感上下文
-        emotional_context = self._build_enhanced_context(state)
-        req.extra_user_content_parts.append(TextPart(text=f"\n{emotional_context}"))
+        emotional_context = self._build_enhanced_context(
+            state, memory_context=memory_context, stage_info=stage_info
+        )
+        part = TextPart(text=f"\n{emotional_context}")
+        # v4.2.0：标记为“仅 provider 可见、不落盘”。AstrBot 的
+        # dump_messages_with_checkpoints 会过滤 _no_save part；提供商侧
+        # 仍能正常看到内容，因此不会污染会话历史，也不改变前缀。
+        mark_temp = getattr(part, "mark_as_temp", None)
+        if callable(mark_temp):
+            mark_temp()
+        else:
+            # 兼容没有 mark_as_temp() 的旧框架；dump 侧仍按 _no_save 过滤。
+            try:
+                setattr(part, "_no_save", True)
+            except Exception:
+                pass
+        req.extra_user_content_parts.append(part)
 
         # 流式输出净化：控制标记的过滤必须下沉到生成器层
         # 原因：流式模式下 ResultDecorateStage 被整体跳过，
@@ -1120,6 +1143,47 @@ class EmotionAIProPlugin(Star):
         except Exception as e:
             logger.warning(f"图片格式过滤失败，保持默认行为: {e}")
 
+    def _strip_control_marker_from_run_context(self, run_context) -> None:
+        """把 ``[需要情感评估]`` 从已 append 的 assistant 历史里清掉。
+
+        AgentRunner 会先把带标记的 assistant 消息放进 run_context，
+        随后才触发 on_llm_response；插件只改了 ``resp.completion_text``，
+        不改 run_context 的话标记会随历史落盘。这里在保存前兜底清理。
+        """
+        try:
+            messages = getattr(run_context, "messages", None)
+            if not messages:
+                return
+            pattern = getattr(self, "need_assessment_pattern", None)
+            if pattern is None:
+                pattern = re.compile(r"\[需要情感评估\]")
+            for message in reversed(messages):
+                if (message.get("role") if isinstance(message, dict)
+                        else getattr(message, "role", None)) != "assistant":
+                    continue
+                content = (message.get("content") if isinstance(message, dict)
+                           else getattr(message, "content", None))
+                if isinstance(content, str):
+                    new_content = pattern.sub("", content).strip()
+                    if new_content != content:
+                        if isinstance(message, dict):
+                            message["content"] = new_content
+                        else:
+                            message.content = new_content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict):
+                            text = part.get("text")
+                            if isinstance(text, str) and pattern.search(text):
+                                part["text"] = pattern.sub("", text).strip()
+                        else:
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str) and pattern.search(text):
+                                part.text = pattern.sub("", text).strip()
+                break
+        except Exception as e:
+            logger.warning(f"清理情感评估标记失败（不影响回复）: {e}")
+
     @filter.on_agent_done()
     async def _restore_full_context(self, event: AstrMessageEvent,
                                     run_context, response) -> None:
@@ -1133,6 +1197,9 @@ class EmotionAIProPlugin(Star):
         [system?] + 裁剪后的 contexts + 本回合新消息，因此边界就是
         本回合的起点，插在它前面即恢复原始顺序。
         """
+        # v4.2.0：即使没有保鲜快照，也要清理控制标记。
+        self._strip_control_marker_from_run_context(run_context)
+
         full = event.get_extra(self._FRESHNESS_SNAPSHOT_KEY)
         if full is None:
             return
@@ -1166,8 +1233,86 @@ class EmotionAIProPlugin(Star):
         except Exception as e:
             logger.warning(f"上下文保鲜还原失败，本轮会话记录可能不完整: {e}")
 
-    def _build_enhanced_context(self, state: EnhancedEmotionalState) -> str:
-        """构建改进的主LLM上下文"""
+    def _refresh_stage_snapshot(self, state: EnhancedEmotionalState):
+        """刷新关系阶段快照（只读计算，不推进过渡基线）。
+
+        v4.2.0 修复：旧实现只在 ``_format_emotional_state``（状态面板）
+        里写 ``state.relationship_stage``，默认 ``show_status=False`` 时
+        普通聊天永远读到旧阶段。这里每轮请求前按当前 favor/intimacy
+        重新算一次，保证提示词、辅助 LLM 和长期记忆看到的是同一阶段。
+        """
+        manager = getattr(self, "weight_manager", None)
+        if manager is None:
+            return None
+        try:
+            snapshot = manager.get_stage_snapshot(state)
+            if not isinstance(snapshot, dict):
+                return None
+            stage_name = snapshot.get("stage_name")
+            if stage_name:
+                state.relationship_stage = stage_name
+            if "composite_score" in snapshot:
+                state.stage_composite_score = snapshot["composite_score"]
+            if "progress_to_next" in snapshot:
+                state.stage_progress = snapshot["progress_to_next"]
+            return snapshot
+        except Exception as e:
+            logger.warning(f"刷新关系阶段失败，保持旧值: {e}")
+            return None
+
+    async def _build_memory_context(self, event: AstrMessageEvent,
+                                    state: EnhancedEmotionalState) -> str:
+        """构建“长期关系统计 + 好感度驱动具体记忆”的注入文本。"""
+        memory = getattr(self, "memory_system", None)
+        if memory is None:
+            return "【长期关系发展轨迹】\n暂无长期互动记录\n"
+
+        use_recall = bool(getattr(self.config, "enable_memory_recall", True))
+        builder = getattr(memory, "build_memory_context", None)
+        if use_recall and inspect.iscoroutinefunction(builder):
+            try:
+                mood = self.get_mood_sync()
+                mood_bias = (
+                    relationship_style.mood_valence(mood)
+                    if bool(getattr(self.config, "mood_memory_bias", True))
+                    else 0
+                )
+                return await builder(
+                    user_key=state.user_key,
+                    query=self._get_message_text(event),
+                    favor=state.favor,
+                    intimacy=state.intimacy,
+                    mood_valence=mood_bias,
+                    max_items=getattr(self.config, "memory_recall_max_items", 6),
+                    enabled=True,
+                )
+            except Exception as e:
+                logger.warning(f"记忆召回失败，回退到关系统计: {e}")
+
+        # 即使关闭具体记忆召回，也要先加载关系统计，避免重启后第一轮
+        # 读到空记忆。
+        ensure_loaded = getattr(memory, "ensure_loaded", None)
+        if inspect.iscoroutinefunction(ensure_loaded):
+            try:
+                await ensure_loaded()
+            except Exception as e:
+                logger.warning(f"加载长期记忆失败: {e}")
+        try:
+            return memory.get_relationship_context(state.user_key)
+        except Exception as e:
+            logger.warning(f"获取关系上下文失败: {e}")
+            return "暂无长期互动记录"
+
+    def _build_enhanced_context(self, state: EnhancedEmotionalState,
+                                memory_context: Optional[str] = None,
+                                stage_info: Optional[dict] = None) -> str:
+        """构建改进的主LLM上下文。
+
+        ⚠️ 缓存约束：本方法返回的全文只由调用方追加到
+        ``req.extra_user_content_parts``（当前用户消息之后）。这里绝不
+        修改 ``system_prompt`` 或 ``req.contexts``，否则会破坏 DeepSeek
+        等提供商的前缀缓存。
+        """
 
         # 「启用 FavourPro 态度关系系统」开关（v4.0.20 修正）
         #
@@ -1181,20 +1326,35 @@ class EmotionAIProPlugin(Star):
 
         # 获取语气指导
         tone_instruction = self.attitude_manager.get_tone_instruction(state)
-    
-        # 获取关系上下文 - 使用同步版本
-        try:
-            relationship_context = self.memory_system.get_relationship_context(state.user_key)
-        except Exception as e:
-            logger.warning(f"获取关系上下文失败: {e}")
-            relationship_context = "暂无长期互动记录"
+
+        # 记忆上下文：生产路径由 inject_enhanced_context 传入“统计 + 具体
+        # 记忆”；测试/旧调用方没有传时保持 v4.1 的行为，只取关系统计。
+        if memory_context is None:
+            try:
+                relationship_context = self.memory_system.get_relationship_context(state.user_key)
+            except Exception as e:
+                logger.warning(f"获取关系上下文失败: {e}")
+                relationship_context = "暂无长期互动记录"
+        else:
+            relationship_context = memory_context or "暂无长期互动记录"
+        if not isinstance(relationship_context, str):
+            relationship_context = str(relationship_context)
+
+        stage_name = (stage_info or {}).get("stage_name") or state.relationship_stage
+
+        # v4.2.0：关系基线（硬约束）+ 心情倾向（软修饰）。
+        # 两者都只走尾部注入，不影响前缀缓存。
+        behavior_block = relationship_style.behavior_block(
+            state.favor, state.intimacy, stage_name
+        )
 
         # 注入文本同样要过 AI 字样清洗（与状态展示、描述写入保持一致）。
         # 长期记忆里的关系描述是模型生成的，可能残留 "AI" 字样；直接注入会被人设
         # 判定为身份冲突。bot_name 未解析时 _sanitize_ai_text 是安全的空操作。
         tone_instruction = self._sanitize_ai_text(tone_instruction)
         relationship_context = self._sanitize_ai_text(relationship_context)
-    
+        behavior_block = self._sanitize_ai_text(behavior_block)
+
         # ⚠️ 人设一致性：此处严禁出现「你是一个……AI 助手」这类**身份断言**。
         # 本插件是通用件，而相当多的人设（例如「测试助手」）在 system_prompt 里
         # 明确写了「你不是 AI / 不要承认自己是 AI」。在注入文本里自称 AI 会与人设
@@ -1206,37 +1366,26 @@ class EmotionAIProPlugin(Star):
             f"态度倾向：{state.descriptions.attitude}\n" if attitude_enabled else ""
         )
 
-        # 全局心情注入（v4.1.6）：让 bot 的实时心情也参与回复生成
-        # （此前心情只影响展示面板，模型完全感知不到）。
-        #
-        # ⚠️ 缓存友好：本节由调用方（inject_enhanced_context）随整段上下文
-        # 一起追加到 req.extra_user_content_parts——位于**当前用户消息之后**
-        # 的尾部，不碰 system_prompt 与 req.contexts。DeepSeek 等提供商的
-        # 「前缀缓存」（system_prompt + 历史消息）因此保持稳定，心情变化
-        # 只影响末尾一小段，缓存命中率不受影响。
+        # 全局心情注入（v4.1.6，v4.2.0 增强）：心情不仅展示，还会以
+        # “心情倾向”影响语气强弱；但始终被关系基线约束。
         mood = self.get_mood_sync()
         mood_block = ""
         if bool(getattr(self.config, "enable_mood_influence", True)):
-            mood_block = (
-                "【当前心情】\n"
-                f"主导情绪：{mood.dominant_emotion}"
-                f"（{self._get_mood_label(mood.intensity, mood.dominant_emotion)}）"
-                f"| 强度：{mood.intensity:.2f}/1\n"
-                "说明：这是你此刻真实的心情。请让它自然地影响你的语气、用词与"
-                "情绪表达，但不要主动向用户提起它，也不要因此改变你既有的身份"
-                "设定与说话风格。\n\n"
-            )
+            strength = getattr(self.config, "mood_influence_strength", 0.7)
+            mood_block = relationship_style.mood_block(mood, strength) + "\n"
+
         return f"""
 【机密情感系统 - 主对话模式】
 以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，
 在此基础上自然地调整语气、用词与情绪倾向。
 
+{behavior_block}
 {relationship_context}
 
 【当前情感状态】
 主导情感：{self.analyzer.get_dominant_emotion(state)}
 情感强度：{self._get_emotion_intensity(state)}/1
-关系阶段：{state.relationship_stage}
+关系阶段：{stage_name}
 {attitude_line}好感度：{state.favor} | 亲密度：{state.intimacy}
 
 {mood_block}【语气指导】
@@ -1311,6 +1460,9 @@ class EmotionAIProPlugin(Star):
 
         # 获取当前状态
         state = await self.user_manager.get_user_state(user_key)
+
+        # v4.2.0：专家 LLM 也要看到“当前”阶段，而不是上次面板刷新时的旧值
+        self._refresh_stage_snapshot(state)
 
         # 增加强制更新计数器
         state.force_update_counter += 1
@@ -1440,7 +1592,9 @@ class EmotionAIProPlugin(Star):
                 emotional_significance = self._calculate_emotional_significance(expert_updates)
                 await self.memory_system.add_interaction(
                     user_key, user_message, original_text, emotional_significance,
-                    emotional_changes=expert_updates
+                    emotional_changes=expert_updates,
+                    favor=state.favor,
+                    intimacy=state.intimacy,
                 )
 
                 # 重置强制更新计数器
@@ -1461,6 +1615,9 @@ class EmotionAIProPlugin(Star):
                 )
             else:
                 logger.warning(f"[DEBUG] 情感分析返回空结果")
+
+            # v4.2.0：数值变化后立即刷新阶段，供下一轮提示词 / 记忆召回
+            self._refresh_stage_snapshot(state)
 
             # 落盘更新后的状态
             await self.user_manager.update_user_state(user_key, state)
@@ -1566,8 +1723,24 @@ class EmotionAIProPlugin(Star):
             # 只有来自真实LLM的分析才更新文本描述（写入前清洗独立"AI"字样）
             if 'attitude_text' in apply_updates and apply_updates['attitude_text']:
                 clean_attitude = self._sanitize_ai_text(updates['attitude_text'])
-                state.descriptions.update_attitude(clean_attitude)
-                logger.info(f"更新态度描述: '{clean_attitude}'")
+                # v4.2.0：自动生成的态度不能越过当前关系档位（例如
+                # favor=-50 却写“亲昵撒娇”）。管理员手工 /设置态度
+                # 不经过这里，仍拥有最高优先级。
+                if not relationship_style.attitude_matches_band(
+                    clean_attitude, state.favor, state.intimacy
+                ):
+                    fallback = relationship_style.attitude_fallback(
+                        state.favor, state.intimacy,
+                        seed=int(time.time()) ^ hash(state.user_key),
+                    )
+                    logger.info(
+                        f"态度描述越过关系档位，改用兜底: "
+                        f"'{clean_attitude}' -> '{fallback}'"
+                    )
+                    clean_attitude = fallback
+                if clean_attitude:
+                    state.descriptions.update_attitude(clean_attitude)
+                    logger.info(f"更新态度描述: '{clean_attitude}'")
 
             if 'relationship_text' in apply_updates and apply_updates['relationship_text']:
                 clean_relationship = self._sanitize_ai_text(updates['relationship_text'])

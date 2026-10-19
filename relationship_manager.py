@@ -1,5 +1,4 @@
 # relationship_manager.py
-import time
 from typing import Dict, Any, Optional, Tuple
 
 from .models import EnhancedEmotionalState
@@ -448,6 +447,54 @@ class DynamicWeightManager:
         target_stage, transition_info = cls.calculate_stage(state)
         return transition_info["protected_composite"]
     
+    @classmethod
+    def get_stage_snapshot(cls, state: EnhancedEmotionalState) -> Dict[str, Any]:
+        """只读的关系阶段快照（v4.2.0）。
+
+        与 ``get_stage_info`` 的区别：**不推进** ``_previous_stage`` /
+        ``_previous_composite`` 基线，可安全用于每轮请求前的提示词注入。
+        旧实现里普通聊天路径只在“状态面板”里刷新阶段，默认
+        ``show_status=False`` 时提示词会长期读到旧阶段，导致好感度对
+        态度的传导断掉。
+        """
+        if state.favor < 0:
+            info = cls._get_negative_favor_stage_info(state)
+            return {
+                "stage": None,
+                "stage_name": info["stage_name"],
+                "description": info["description"],
+                "composite_score": info["composite_score"],
+                "progress_to_next": info["progress_to_next"],
+                "is_transitioning": False,
+                "intimacy_gate": None,
+            }
+
+        stage_key, transition_info = cls.calculate_stage(state)
+        stage_config = cls.STAGE_CONFIGS[stage_key]
+        composite_score = cls.calculate_composite_score(state)
+        next_key = _next_stage_key(stage_key)
+        current_threshold = stage_config["composite_threshold"]
+        if next_key is not None:
+            next_threshold = cls.STAGE_CONFIGS[next_key]["composite_threshold"]
+            span = max(1, next_threshold - current_threshold)
+            progress = max(
+                0.0, min(100.0, (composite_score - current_threshold) / span * 100)
+            )
+        else:
+            progress = 100.0
+        return {
+            "stage": stage_key,
+            "stage_name": get_stage_name(stage_key),
+            "description": stage_config["description"],
+            "composite_score": composite_score,
+            "progress_to_next": progress,
+            "is_transitioning": bool(transition_info.get("is_transitioning")),
+            "intimacy_gate": transition_info.get("intimacy_gate"),
+            "next_stage_name": (
+                get_stage_name(next_key) if next_key else "已达最高阶段"
+            ),
+        }
+
     @classmethod
     def get_stage_info(cls, state: EnhancedEmotionalState) -> Dict[str, Any]:
         """获取完整的阶段信息（包含过渡状态）"""

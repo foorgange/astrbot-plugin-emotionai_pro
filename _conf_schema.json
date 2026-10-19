@@ -231,6 +231,40 @@
     "default": true,
     "hint": "开启后 bot 的实时心情（喜怒哀伤等）会注入主对话，影响回复的语气与情绪表达；关闭后心情照常演进与展示，仅不注入 LLM。不会影响模型上下文缓存命中（注入位置在用户消息之后）"
   },
+  "mood_influence_strength": {
+    "description": "心情对语气的影响强度",
+    "type": "float",
+    "default": 0.7,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "0=只展示心情、几乎不影响措辞；1=心情倾向最明显。心情始终只能修饰关系基线，不会让低好感突然变亲昵"
+  },
+  "mood_memory_bias": {
+    "description": "启用心情一致的记忆召回",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，开心时更容易想起共同的好事，低落/生气时更容易想起旧冲突或边界；好感度仍是主权重，心情只做小幅偏置"
+  },
+  "enable_memory_recall": {
+    "description": "启用好感度驱动的长期记忆召回",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后会把该用户的具体记忆片段（说过的话、共同经历）注入主对话；关闭后只注入互动次数等关系统计（旧行为）。新增内容仍只追加在用户消息之后，不影响前缀缓存"
+  },
+  "memory_recall_max_items": {
+    "description": "单轮最多召回几条具体记忆",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "好感度会在该上限内决定实际召回条数：高好感更多，低好感更少。条数越多，尾部 token 越多，但不影响历史前缀缓存"
+  },
   "enable_llm_mood_reason": {
     "description": "启用大模型生成心情变化原因",
     "type": "bool",
