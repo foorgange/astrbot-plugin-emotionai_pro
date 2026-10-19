@@ -278,6 +278,15 @@ data/plugin_data/astrbot_plugin_emotionai_pro/emotionai_pro/
 
 ---
 
+## 致谢
+
+- 原作者 **asakiyoshi**：EmotionAI Pro 的原始设计与实现。
+- **FavourPro** 作者与社区：好感度、态度与关系系统的早期探索。
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot)：插件运行框架与插件市场。
+- 所有提交 issue、反馈线上问题、帮忙验证的群友与用户。
+
+---
+
 ## 结语
 
 **EmotionAI Pro** 不只是一个“好感度插件”，而是一个：
