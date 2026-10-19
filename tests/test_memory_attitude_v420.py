@@ -142,6 +142,19 @@ class TestMemoryV420(unittest.TestCase):
         self.assertEqual(high_count, 1, "高好感应把 significance=3 记进长期记忆")
         self.assertEqual(low_count, 0, "低好感不应记录 significance=5 的普通互动")
 
+    def test_old_records_infer_valence_and_kind(self):
+        from emotionai_pro.memory import InteractionRecord
+
+        record = InteractionRecord.from_dict({
+            "user_msg": "你上次那句话真的很过分",
+            "ai_response": "对不起",
+            "timestamp": time.time(),
+            "significance": 8,
+            "emotional_changes": {"favor": -3, "anger": 3},
+        })
+        self.assertEqual(record.valence, -1, "旧存档的愤怒变化必须推断为负面")
+        self.assertEqual(record.kind, "conflict")
+
     def test_low_favor_still_stores_negative_boundary(self):
         async def run():
             mem = EnhancedMemorySystem(None, significance_threshold=5)

@@ -89,8 +89,13 @@ class InteractionRecord:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'InteractionRecord':
-        """从字典创建（兼容 v4.1.x 旧存档）"""
-        return cls(
+        """从字典创建（兼容 v4.1.x 旧存档）。
+
+        v4.2.0 的旧存档没有 ``valence`` / ``kind``：这里按情感变化和
+        文本规则就地推断，避免升级后 800+ 条老记忆全部被当成“中性事件”，
+        让高/低好感的召回偏置对老用户也立即生效。
+        """
+        record = cls(
             user_msg=data.get('user_msg', ''),
             ai_response=data.get('ai_response', ''),
             timestamp=data.get('timestamp', 0),
@@ -103,6 +108,13 @@ class InteractionRecord:
             last_recalled_at=data.get('last_recalled_at', 0.0),
             recall_count=data.get('recall_count', 0),
         )
+        if 'valence' not in data:
+            record.valence = _compute_valence(record.emotional_changes)
+        if not data.get('kind'):
+            record.kind = _classify_kind(
+                record.user_msg, record.ai_response, record.valence
+            )
+        return record
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -159,7 +171,8 @@ def _compute_valence(changes: Dict[str, Any]) -> int:
 
 _KIND_PATTERNS = (
     ("conflict", ("吵架", "生气", "讨厌", "烦死", "滚", "闭嘴", "道歉",
-                  "对不起", "冲突", "冒犯", "边界", "别烦", "不想理")),
+                  "对不起", "冲突", "冒犯", "边界", "别烦", "不想理",
+                  "过分", "伤害", "失望")),
     ("promise", ("答应", "约定", "说好", "下次", "一定", "保证", "改天")),
     ("preference", ("喜欢", "讨厌吃", "爱吃", "不吃", "生日", "习惯",
                     "口头禅", "过敏", "忌口")),
