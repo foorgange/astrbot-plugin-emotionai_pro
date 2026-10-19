@@ -13,7 +13,7 @@ from astrbot.api import logger
 
 from .models import EnhancedEmotionalState, RankingEntry, InteractionStats
 from .storage import UserStateRepository, BackupManager
-from .cache import ShardedTTLCache
+from .cache import MIN_HIT_RATE_SAMPLE, ShardedTTLCache
 from .constants import UpdateThresholds, TimeConstants, EmotionConstants
 from .config import PluginConfig
 from .stage_names import get_stage_name
@@ -210,12 +210,23 @@ class UserStateManager:
                 try:
                     await asyncio.sleep(300)  # 5分钟检查一次
                     
-                    # 检查缓存命中率
+                    # 检查缓存命中率。低流量/重启后样本太少时不告警，
+                    # 避免把 0/4、1/7 这类小样本误报成缓存失效。
                     cache_stats = await self.cache.get_stats()
                     hit_rate = cache_stats.get('hit_rate', 0)
-                    
-                    if hit_rate < 30:
-                        logger.warning(f"缓存警告: 命中率较低 ({hit_rate:.1f}%)")
+                    access_count = int(cache_stats.get('access_count', 0) or 0)
+                    hit_count = int(cache_stats.get('hit_count', 0) or 0)
+
+                    if access_count >= MIN_HIT_RATE_SAMPLE and hit_rate < 30:
+                        logger.warning(
+                            "缓存警告: 命中率偏低 "
+                            f"({hit_rate:.1f}%, {hit_count}/{access_count})"
+                        )
+                    elif access_count:
+                        logger.debug(
+                            "用户状态缓存统计: "
+                            f"命中率 {hit_rate:.1f}% ({hit_count}/{access_count})"
+                        )
                     
                     # 检查脏键数量
                     async with self.dirty_lock:

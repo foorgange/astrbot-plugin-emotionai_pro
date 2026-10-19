@@ -14,6 +14,10 @@ from astrbot.api import logger
 from .constants import CacheConstants, TimeConstants
 from .models import CacheStats
 
+# 命中率样本下限：重启后或低流量时 access_count 很小，0/4、1/7 这类
+# 小样本会被算成 0%~25%，不代表缓存真的失效；样本太少时不告警。
+MIN_HIT_RATE_SAMPLE = 20
+
 # 尝试导入xxhash，如果失败则使用内置哈希
 try:
     import xxhash
@@ -411,10 +415,23 @@ class ShardedTTLCache:
                 try:
                     await asyncio.sleep(TimeConstants.ONE_MINUTE * 15)  # 15分钟报告一次
                     stats = await self.get_stats()
-                    
-                    if stats['hit_rate'] < 50:
-                        logger.warning(f"缓存警告: 命中率较低 ({stats['hit_rate']:.1f}%)")
-                    
+                    access_count = int(stats.get('access_count', 0) or 0)
+                    hit_count = int(stats.get('hit_count', 0) or 0)
+
+                    # 小样本不告警：重启后前几次访问、或低流量时段
+                    # 0/4、1/7 这类命中率没有统计意义。
+                    if access_count >= MIN_HIT_RATE_SAMPLE and stats['hit_rate'] < 30:
+                        logger.warning(
+                            "缓存警告: 命中率偏低 "
+                            f"({stats['hit_rate']:.1f}%, {hit_count}/{access_count})"
+                        )
+                    elif access_count:
+                        logger.debug(
+                            "缓存统计: "
+                            f"命中率 {stats['hit_rate']:.1f}% "
+                            f"({hit_count}/{access_count})"
+                        )
+
                     if stats['memory_usage']['usage_percent'] > 80:
                         logger.warning(f"缓存警告: 内存使用率高 ({stats['memory_usage']['usage_percent']:.1f}%)")
                     
