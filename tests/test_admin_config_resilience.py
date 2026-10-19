@@ -2,7 +2,7 @@
 """管理员权限失效根因回归测试（v4.0.18）
 
 背景（用户实际报障）：
-    在插件配置界面把 QQ 3418451176 填进「管理员QQ号列表」并保存，
+    在插件配置界面把 QQ 10001 填进「管理员QQ号列表」并保存，
     但使用 /设置好感、/查看好感 等管理员命令时始终提示「权限不足」。
 
 根因链：
@@ -47,7 +47,7 @@ SERVER_LIKE_RAW = {
     "intimacy_max": 200,
     "change_min": 3,           # 旧版 le=0 → 报错
     "change_max": 2,
-    "admin_qq_list": ["3418451176"],
+    "admin_qq_list": ["10001"],
     "plugin_priority": 100000,
     "enable_attitude_system": True,
     "enable_ai_text_generation": True,
@@ -60,10 +60,10 @@ SERVER_LIKE_RAW = {
     "secondary_llm_model": "",
     "emotion_llm_time_budget": 45.0,
     "emotion_llm_max_providers": 3,
-    "bot_name": "永雏塔菲",
+    "bot_name": "测试助手",
 }
 
-TARGET_QQ = "3418451176"
+TARGET_QQ = "10001"
 
 
 def _plugin_stub():
@@ -116,7 +116,7 @@ class TestTolerantConfigLoad(unittest.TestCase):
         cfg = self._load(SERVER_LIKE_RAW)
         self.assertIn(TARGET_QQ, cfg.admin_qq_list)
         self.assertEqual(cfg.intimacy_min, -100)
-        self.assertEqual(cfg.bot_name, "永雏塔菲")
+        self.assertEqual(cfg.bot_name, "测试助手")
 
     def test_bad_field_falls_back_alone(self):
         """一个字段真非法时，管理员列表不能被连坐清空"""
@@ -126,7 +126,7 @@ class TestTolerantConfigLoad(unittest.TestCase):
         self.assertEqual(cfg.plugin_priority, 100000, "非法字段应回退为默认值")
         self.assertIn(TARGET_QQ, cfg.admin_qq_list,
                       "非法字段不应导致整份配置被丢弃（这正是权限不足的根因）")
-        self.assertEqual(cfg.bot_name, "永雏塔菲")
+        self.assertEqual(cfg.bot_name, "测试助手")
 
     def test_unknown_key_is_ignored(self):
         """配置里多出插件不认识的键不应触发校验失败"""

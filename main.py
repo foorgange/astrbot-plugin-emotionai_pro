@@ -52,7 +52,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.15")
+@register("EmotionAI Pro", "融合优化版", "优化的高级情感智能交互系统", "4.1.16")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -483,7 +483,7 @@ class EmotionAIProPlugin(Star):
     def _extract_name_from_prompt(self, prompt: str) -> Optional[str]:
         """从 persona 提示词第一行提取人设名
 
-        形如「# 永雏塔菲 — QQ群机器人人设提示词」提取「永雏塔菲」；
+        形如「# 测试助手 — QQ群机器人人设提示词」提取「测试助手」；
         无法识别时返回 None。
         """
         if not prompt:
@@ -554,7 +554,7 @@ class EmotionAIProPlugin(Star):
             if persona is None:
                 return
 
-            # persona 的 name 即 persona_id（如“永雏塔菲”）；default 则回退到提示词提取
+            # persona 的 name 即 persona_id（如“测试助手”）；default 则回退到提示词提取
             if persona.get("name") and str(persona.get("name")) != "default":
                 self._resolved_bot_name = str(persona["name"]).strip()
             else:
@@ -1196,7 +1196,7 @@ class EmotionAIProPlugin(Star):
         relationship_context = self._sanitize_ai_text(relationship_context)
     
         # ⚠️ 人设一致性：此处严禁出现「你是一个……AI 助手」这类**身份断言**。
-        # 本插件是通用件，而相当多的人设（例如「永雏塔菲」）在 system_prompt 里
+        # 本插件是通用件，而相当多的人设（例如「测试助手」）在 system_prompt 里
         # 明确写了「你不是 AI / 不要承认自己是 AI」。在注入文本里自称 AI 会与人设
         # 直接冲突，导致模型人格漂移（说话开始像通用助手而不是角色本身）。
         # 因此这里只描述「这是一份情感状态参考」，并显式要求保持既有身份与风格不变。

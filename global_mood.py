@@ -467,7 +467,7 @@ _MOOD_KEYWORD_MAP: Dict[str, Dict[str, int]] = {
     "不好意思": {"sadness": 1},
     "不理你": {"sadness": 1, "anger": 1},
     "慌": {"fear": 1},
-    # 直播 / 期待（塔菲是主播，这类词在她直播间极高频率）
+    # 直播 / 期待（不少 bot 人设是主播，这类词在直播间出现频率高）
     "直播": {"anticipation": 1},
     "开播": {"anticipation": 2},
     "下播": {"sadness": 1},

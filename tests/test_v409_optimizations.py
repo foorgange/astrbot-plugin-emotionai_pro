@@ -217,7 +217,7 @@ class TestStorageOptimized(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d:
                 path = Path(d) / "data.json"
                 st = AtomicJSONStorage(path)
-                data = {"名字": "塔菲", "值": 42}
+                data = {"名字": "小助手", "值": 42}
                 await st.save(data)
 
                 raw = path.read_bytes()

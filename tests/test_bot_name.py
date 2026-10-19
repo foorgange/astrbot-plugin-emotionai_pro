@@ -32,14 +32,14 @@ class TestExtractNameFromPrompt(unittest.TestCase):
         self.plugin = make_plugin()
 
     def test_extract_tail_wind(self):
-        """「# 永雏塔菲 — QQ群机器人人设提示词」→ 永雏塔菲"""
-        name = self.plugin._extract_name_from_prompt("# 永雏塔菲 — QQ群机器人人设提示词")
-        self.assertEqual(name, "永雏塔菲")
+        """「# 测试助手 — QQ群机器人人设提示词」→ 测试助手"""
+        name = self.plugin._extract_name_from_prompt("# 测试助手 — QQ群机器人人设提示词")
+        self.assertEqual(name, "测试助手")
 
     def test_extract_simple(self):
-        """「# 塔菲」→ 塔菲"""
-        name = self.plugin._extract_name_from_prompt("# 塔菲")
-        self.assertEqual(name, "塔菲")
+        """「# 小助手」→ 小助手"""
+        name = self.plugin._extract_name_from_prompt("# 小助手")
+        self.assertEqual(name, "小助手")
 
     def test_extract_english(self):
         """「# Taffy」→ Taffy"""
@@ -48,7 +48,7 @@ class TestExtractNameFromPrompt(unittest.TestCase):
 
     def test_extract_no_hash(self):
         """不以 # 开头 → None"""
-        name = self.plugin._extract_name_from_prompt("永雏塔菲")
+        name = self.plugin._extract_name_from_prompt("测试助手")
         self.assertIsNone(name)
 
     def test_extract_empty(self):
@@ -60,15 +60,15 @@ class TestExtractNameFromPrompt(unittest.TestCase):
 class TestGetBotName(unittest.TestCase):
     def test_config_priority(self):
         """配置项优先于运行时解析值"""
-        plugin = make_plugin(bot_name="塔菲")
+        plugin = make_plugin(bot_name="小助手")
         plugin._resolved_bot_name = "旧值"
-        self.assertEqual(plugin._get_bot_name(), "塔菲")
+        self.assertEqual(plugin._get_bot_name(), "小助手")
 
     def test_resolved_fallback(self):
         """配置为空时用运行时解析值"""
         plugin = make_plugin()
-        plugin._resolved_bot_name = "永雏塔菲"
-        self.assertEqual(plugin._get_bot_name(), "永雏塔菲")
+        plugin._resolved_bot_name = "测试助手"
+        self.assertEqual(plugin._get_bot_name(), "测试助手")
 
     def test_none_when_unresolved(self):
         """配置与解析值均为空 → None（不替换）"""
@@ -78,19 +78,19 @@ class TestGetBotName(unittest.TestCase):
 
 class TestSanitizeAiText(unittest.TestCase):
     def setUp(self):
-        self.plugin = make_plugin(bot_name="塔菲")
+        self.plugin = make_plugin(bot_name="小助手")
 
     def test_standalone_ai(self):
-        """独立 AI → 塔菲"""
-        self.assertEqual(self.plugin._sanitize_ai_text("AI 说你好"), "塔菲 说你好")
+        """独立 AI → 小助手"""
+        self.assertEqual(self.plugin._sanitize_ai_text("AI 说你好"), "小助手 说你好")
 
     def test_chinese_embedded_ai(self):
-        """中文夹住的 ai → 塔菲（核心场景）"""
-        self.assertEqual(self.plugin._sanitize_ai_text("亲密玩闹的ai伙伴"), "亲密玩闹的塔菲伙伴")
+        """中文夹住的 ai → 小助手（核心场景）"""
+        self.assertEqual(self.plugin._sanitize_ai_text("亲密玩闹的ai伙伴"), "亲密玩闹的小助手伙伴")
 
     def test_upper_lower(self):
         """大小写均替换"""
-        self.assertEqual(self.plugin._sanitize_ai_text("ai 你好"), "塔菲 你好")
+        self.assertEqual(self.plugin._sanitize_ai_text("ai 你好"), "小助手 你好")
 
     def test_chinese_not_false_positive(self):
         """纯中文无 ASCII "AI" 字形 → 不误伤（“人工智能”由汉字组成，不是字母 AI）"""
@@ -132,7 +132,7 @@ class _AsyncPersonaResolver:
     这样「忘了 await」和「调用约定写错」都会被测出来。
     """
 
-    def __init__(self, persona_name="永雏塔菲", prompt="# 永雏塔菲 — 人设",
+    def __init__(self, persona_name="测试助手", prompt="# 测试助手 — 人设",
                  default_persona=False, raises=None):
         if default_persona:
             self._persona = {"name": "default", "prompt": prompt}
@@ -151,11 +151,11 @@ class _AsyncPersonaResolver:
         })
         if self._raises is not None:
             raise self._raises
-        return ("永雏塔菲", self._persona, None, False)
+        return ("测试助手", self._persona, None, False)
 
 
 class TestEnsureBotName(unittest.TestCase):
-    async def _run_ensure(self, plugin, persona_name="永雏塔菲", prompt="# 永雏塔菲 — 人设", default_persona=False):
+    async def _run_ensure(self, plugin, persona_name="测试助手", prompt="# 测试助手 — 人设", default_persona=False):
         from astrbot.api.event import AstrMessageEvent
         from astrbot.api.provider import ProviderRequest
 
@@ -175,9 +175,9 @@ class TestEnsureBotName(unittest.TestCase):
         """persona name 非 default → 直接用 persona 名"""
         import asyncio
         plugin = make_plugin()
-        result = asyncio.run(self._run_ensure(plugin, persona_name="永雏塔菲"))
-        self.assertEqual(result._resolved_bot_name, "永雏塔菲")
-        self.assertEqual(result.config.bot_name, "永雏塔菲")
+        result = asyncio.run(self._run_ensure(plugin, persona_name="测试助手"))
+        self.assertEqual(result._resolved_bot_name, "测试助手")
+        self.assertEqual(result.config.bot_name, "测试助手")
         # 落盘被调用
         result._raw_config.save_config_async.assert_awaited()
 
@@ -185,8 +185,8 @@ class TestEnsureBotName(unittest.TestCase):
         """default persona → 从提示词第一行提取"""
         import asyncio
         plugin = make_plugin()
-        result = asyncio.run(self._run_ensure(plugin, default_persona=True, prompt="# 塔菲 — 人设提示词"))
-        self.assertEqual(result._resolved_bot_name, "塔菲")
+        result = asyncio.run(self._run_ensure(plugin, default_persona=True, prompt="# 小助手 — 人设提示词"))
+        self.assertEqual(result._resolved_bot_name, "小助手")
 
     def test_async_resolver_is_awaited(self):
         """回归锁定：async 的 persona 解析必须被 await（v4.0.15 修的静默失效）
@@ -200,7 +200,7 @@ class TestEnsureBotName(unittest.TestCase):
         from astrbot.api.provider import ProviderRequest
 
         plugin = make_plugin()
-        resolver = _AsyncPersonaResolver(persona_name="永雏塔菲")
+        resolver = _AsyncPersonaResolver(persona_name="测试助手")
         plugin.context.get_config = MagicMock(return_value={"provider_settings": {}})
         plugin.context.persona_manager = MagicMock()
         plugin.context.persona_manager.resolve_selected_persona = resolver.resolve_selected_persona
@@ -211,7 +211,7 @@ class TestEnsureBotName(unittest.TestCase):
         asyncio.run(go())
 
         self.assertEqual(len(resolver.calls), 1, "解析函数应被调用一次")
-        self.assertEqual(plugin._resolved_bot_name, "永雏塔菲",
+        self.assertEqual(plugin._resolved_bot_name, "测试助手",
                          "async 解析函数未被 await（解包 coroutine 会抛 TypeError 被吞掉）")
 
     def test_real_signature_is_keyword_only_async(self):

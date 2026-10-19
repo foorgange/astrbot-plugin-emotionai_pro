@@ -87,8 +87,8 @@ class FakeMessageObj:
     """
 
     _GARBAGE_REPR = (
-        "{'timestamp': 1792050576, 'group': Group(group_id='1031757978'), "
-        "'self_id': '3630174890', 'sender': MessageMember(user_id='2571968467'), "
+        "{'timestamp': 1792050576, 'group': Group(group_id='100200300'), "
+        "'self_id': '10000', 'sender': MessageMember(user_id='20002'), "
         "'message': [Image(file='/AstrBot/data/temp/media_image_xxx.jpg', "
         "'url': 'https://multimedia.nt.qq.com.cn/download?...')], "
         "'message_str': '', 'raw_message': <Event, {...}>}"

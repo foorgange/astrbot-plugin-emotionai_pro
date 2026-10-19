@@ -37,11 +37,11 @@ def _mood_with(**dims):
 
 def _ctx_plugin(mood, **cfg_over):
     """构造最小插件实例：只够跑 _build_enhanced_context / _format_emotional_state"""
-    cfg = {"bot_name": "塔菲"}
+    cfg = {"bot_name": "小助手"}
     cfg.update(cfg_over)
     plugin = EmotionAIProPlugin.__new__(EmotionAIProPlugin)
     plugin.config = PluginConfig(**cfg)
-    plugin._resolved_bot_name = "塔菲"
+    plugin._resolved_bot_name = "小助手"
     plugin._bot_name_resolved = True
     plugin._raw_config = None
     plugin.attitude_manager = types.SimpleNamespace(
@@ -58,11 +58,11 @@ def _ctx_plugin(mood, **cfg_over):
 
 def _make_hook_plugin(mood, **cfg_over):
     """构造可跑 inject_enhanced_context 钩子的插件实例（协作者全部桩化）"""
-    cfg = {"bot_name": "塔菲", "session_gap_minutes": 60, "session_based": False}
+    cfg = {"bot_name": "小助手", "session_gap_minutes": 60, "session_based": False}
     cfg.update(cfg_over)
     plugin = EmotionAIProPlugin.__new__(EmotionAIProPlugin)
     plugin.config = PluginConfig(**cfg)
-    plugin._resolved_bot_name = "塔菲"
+    plugin._resolved_bot_name = "小助手"
     plugin._bot_name_resolved = True
     plugin._raw_config = None
     plugin.context = types.SimpleNamespace(get_config=lambda umo=None: None)
@@ -176,7 +176,7 @@ class TestDescribeMood(unittest.TestCase):
 
         plugin, state = _ctx_plugin(_mood_with(anger=11))
         plugin.config = PluginConfig(
-            bot_name="塔菲", global_privacy_level=PrivacyLevel.DETAILED
+            bot_name="小助手", global_privacy_level=PrivacyLevel.DETAILED
         )
         plugin.weight_manager = DynamicWeightManager()
         plugin.analyzer = EmotionAnalyzer()
@@ -286,8 +286,8 @@ class TestMoodHistory(unittest.TestCase):
     def test_same_text_within_window_refreshes_timestamp_only(self):
         """同一事件的双报（窗口内同文本）只刷新时间戳，不占历史条数"""
         mood = GlobalMood()
-        mood.push_change_reason("因为听到「哈哈」，永雏塔菲变得开心起来", 100.0)
-        mood.push_change_reason("因为听到「哈哈」，永雏塔菲变得开心起来", 200.0)
+        mood.push_change_reason("因为听到「哈哈」，测试助手变得开心起来", 100.0)
+        mood.push_change_reason("因为听到「哈哈」，测试助手变得开心起来", 200.0)
         self.assertEqual(len(mood.mood_history), 1)
         self.assertEqual(mood.mood_history[0]["at"], 200.0)
         self.assertEqual(mood.last_change_at, 200.0)
@@ -301,13 +301,13 @@ class TestMoodHistory(unittest.TestCase):
         mood = GlobalMood()
         first = 100.0
         second = first + MOOD_HISTORY_DEDUP_WINDOW + 60
-        mood.push_change_reason("回味刚才的对话之后，永雏塔菲的心情渐渐平复", first)
-        mood.push_change_reason("回味刚才的对话之后，永雏塔菲的心情渐渐平复", second)
+        mood.push_change_reason("回味刚才的对话之后，测试助手的心情渐渐平复", first)
+        mood.push_change_reason("回味刚才的对话之后，测试助手的心情渐渐平复", second)
         self.assertEqual(len(mood.mood_history), 2)
         self.assertEqual(mood.mood_history[0]["at"], second)
         self.assertEqual(mood.mood_history[1]["at"], first)
         self.assertEqual(
-            mood.last_change_reason, "回味刚才的对话之后，永雏塔菲的心情渐渐平复"
+            mood.last_change_reason, "回味刚才的对话之后，测试助手的心情渐渐平复"
         )
 
     def test_unknown_timestamp_treated_as_new_entry(self):
@@ -344,12 +344,12 @@ class TestMoodHistory(unittest.TestCase):
         mood = GlobalMood.from_dict({
             "emotions": {"joy": 10},
             "updated_at": 1.0,
-            "last_change_reason": "因为听到「哈哈」，永雏塔菲变得开心起来",
+            "last_change_reason": "因为听到「哈哈」，测试助手变得开心起来",
             "last_change_at": 123.0,
         })
         self.assertEqual(
             mood.mood_history,
-            [{"reason": "因为听到「哈哈」，永雏塔菲变得开心起来", "at": 123.0}],
+            [{"reason": "因为听到「哈哈」，测试助手变得开心起来", "at": 123.0}],
         )
 
     def test_corrupted_history_tolerated(self):
@@ -450,10 +450,10 @@ class TestMoodCommandThreeChanges(unittest.TestCase):
         """旧存档（无 mood_history、只有 last_change_reason）也能展示"""
         mood = _mood_with(anger=11)
         mood.updated_at = time.time()
-        mood.last_change_reason = "因为听到「气死」，永雏塔菲变得生气起来"
+        mood.last_change_reason = "因为听到「气死」，测试助手变得生气起来"
         mood.last_change_at = time.time() - 120
         text = self._run_mood_command(mood)
-        self.assertIn("1. 因为听到「气死」，永雏塔菲变得生气起来", text)
+        self.assertIn("1. 因为听到「气死」，测试助手变得生气起来", text)
 
 
 if __name__ == "__main__":

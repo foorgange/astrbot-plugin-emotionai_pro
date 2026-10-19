@@ -5,7 +5,7 @@
 1. /心情 的「最近三次变化」永远只显示一条——push_change_reason 对
    同文本永久合并，而专家通道触发语固定、回落模板也固定，同一句话
    被无限合并；
-2. 变化文本单一——「回味刚才的对话之后，永雏塔菲的心情渐渐平复」
+2. 变化文本单一——「回味刚才的对话之后，测试助手的心情渐渐平复」
    反复出现。
 
 本版修复：
@@ -85,7 +85,7 @@ def _mood_plugin(mood):
     plugin.config = PluginConfig()
     plugin._mood_cache = mood
     plugin._mood_cache_time = time.time()
-    plugin._get_bot_name = lambda: "永雏塔菲"
+    plugin._get_bot_name = lambda: "测试助手"
     plugin.get_mood_sync = lambda: mood
     saved = []
 
@@ -103,7 +103,7 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
     def test_llm_reason_used_when_visible(self):
         mood = _mood_with(joy=30)
         reason = build_mood_change_reason(
-            "中立", 0.0, mood, "回味刚才的对话", subject="永雏塔菲",
+            "中立", 0.0, mood, "回味刚才的对话", subject="测试助手",
             llm_reason="被夸了一句，有点开心",
         )
         self.assertEqual(reason, "被夸了一句，有点开心")
@@ -111,7 +111,7 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
     def test_llm_reason_stripped(self):
         mood = _mood_with(joy=30)
         reason = build_mood_change_reason(
-            "中立", 0.0, mood, "回味刚才的对话", subject="永雏塔菲",
+            "中立", 0.0, mood, "回味刚才的对话", subject="测试助手",
             llm_reason="  被凶了一句，火气上来了  ",
         )
         self.assertEqual(reason, "被凶了一句，火气上来了")
@@ -120,7 +120,7 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
         """不可见变化：LLM 原因也不记录（防弱波动把历史刷成废话）"""
         mood = _mood_with(joy=20)
         reason = build_mood_change_reason(
-            "喜悦", 0.20, mood, "回味刚才的对话", subject="永雏塔菲",
+            "喜悦", 0.20, mood, "回味刚才的对话", subject="测试助手",
             llm_reason="没什么变化",
         )
         self.assertIsNone(reason)
@@ -128,19 +128,19 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
     def test_blank_llm_reason_falls_back_to_template(self):
         mood = _mood_with(joy=30)
         reason = build_mood_change_reason(
-            "中立", 0.0, mood, "听到「哈哈」", subject="永雏塔菲",
+            "中立", 0.0, mood, "听到「哈哈」", subject="测试助手",
             llm_reason="   ",
         )
         self.assertIsNotNone(reason)
         self.assertIn("听到「哈哈」", reason)
-        self.assertIn("永雏塔菲", reason)
+        self.assertIn("测试助手", reason)
 
     def test_rise_templates_rotate_by_seed(self):
         """上升/翻转分支三套模板，按种子轮换且互异"""
         mood = _mood_with(joy=30)
         texts = [
             build_mood_change_reason(
-                "中立", 0.0, mood, "听到「哈哈」", subject="永雏塔菲",
+                "中立", 0.0, mood, "听到「哈哈」", subject="测试助手",
                 variant_seed=s,
             )
             for s in range(3)
@@ -148,7 +148,7 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
         self.assertEqual(len(set(texts)), 3)
         for t in texts:
             self.assertIn("听到「哈哈」", t)
-            self.assertIn("永雏塔菲", t)
+            self.assertIn("测试助手", t)
             self.assertIn("开心起来", t)
 
     def test_fallback_templates_include_calm_phrase(self):
@@ -156,15 +156,15 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
         mood = _mood_with(anger=40)
         texts = [
             build_mood_change_reason(
-                "愤怒", 0.60, mood, "回味刚才的对话", subject="永雏塔菲",
+                "愤怒", 0.60, mood, "回味刚才的对话", subject="测试助手",
                 variant_seed=s,
             )
             for s in range(3)
         ]
         self.assertEqual(len(set(texts)), 3)
-        self.assertIn("回味刚才的对话之后，永雏塔菲的心情渐渐平复", texts)
-        self.assertIn("回味刚才的对话之后，永雏塔菲的情绪慢慢缓和下来", texts)
-        self.assertIn("回味刚才的对话之后，永雏塔菲火气慢慢降了下来", texts)
+        self.assertIn("回味刚才的对话之后，测试助手的心情渐渐平复", texts)
+        self.assertIn("回味刚才的对话之后，测试助手的情绪慢慢缓和下来", texts)
+        self.assertIn("回味刚才的对话之后，测试助手火气慢慢降了下来", texts)
         for t in texts:
             self.assertNotIn("因为", t)  # 不把回落算到触发消息头上
 
@@ -172,8 +172,8 @@ class TestBuildReasonLlmAndTemplates(unittest.TestCase):
         """不传种子时取 8 维情绪之和：心情变、模板就跟着换"""
         mood_a = _mood_with(anger=80)
         mood_b = _mood_with(anger=40)
-        text_a = build_mood_change_reason("愤怒", 0.90, mood_a, "回味刚才的对话", subject="永雏塔菲")
-        text_b = build_mood_change_reason("愤怒", 0.50, mood_b, "回味刚才的对话", subject="永雏塔菲")
+        text_a = build_mood_change_reason("愤怒", 0.90, mood_a, "回味刚才的对话", subject="测试助手")
+        text_b = build_mood_change_reason("愤怒", 0.50, mood_b, "回味刚才的对话", subject="测试助手")
         # 80 % 3 = 2（具体描述），40 % 3 = 1（缓和），两句必然不同
         self.assertNotEqual(text_a, text_b)
         self.assertIn("火气慢慢降了下来", text_a)
@@ -274,7 +274,7 @@ class TestUpdateGlobalMoodReasonSource(unittest.TestCase):
         plugin.config = PluginConfig()
         plugin._mood_cache = mood
         plugin._mood_cache_time = time.time()
-        plugin._get_bot_name = lambda: "永雏塔菲"
+        plugin._get_bot_name = lambda: "测试助手"
         plugin.get_mood_sync = lambda: mood
         saved = []
 
@@ -319,7 +319,7 @@ class TestUpdateGlobalMoodReasonSource(unittest.TestCase):
         self._run(plugin, updates={}, allow_spike=False, trigger="回味刚才的对话")
         reason = mood.mood_history[0]["reason"]
         self.assertIn("回味刚才的对话", reason)
-        self.assertIn("永雏塔菲", reason)
+        self.assertIn("测试助手", reason)
 
     def test_non_string_llm_reason_ignored(self):
         """防御：上游传来非字符串 llm_reason 不炸，退回模板"""

@@ -108,7 +108,7 @@ async def storage_check():
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "t.json"
         st = AtomicJSONStorage(p)
-        data = {"中文键": "塔菲", "n": 42, "嵌套": {"a": [1, 2]}}
+        data = {"中文键": "小助手", "n": 42, "嵌套": {"a": [1, 2]}}
         await st.save(data)
 
         raw = p.read_bytes()

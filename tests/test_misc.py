@@ -92,12 +92,12 @@ class TestConfigBotName(unittest.TestCase):
         self.assertIsNone(cfg.bot_name)
 
     def test_set_value(self):
-        cfg = PluginConfig(bot_name="塔菲")
-        self.assertEqual(cfg.bot_name, "塔菲")
+        cfg = PluginConfig(bot_name="小助手")
+        self.assertEqual(cfg.bot_name, "小助手")
 
 
 class TestFormatEmotionalState(unittest.TestCase):
-    def _make_plugin(self, bot_name="塔菲", privacy=2):
+    def _make_plugin(self, bot_name="小助手", privacy=2):
         plugin = EmotionAIProPlugin.__new__(EmotionAIProPlugin)
         plugin.config = PluginConfig(bot_name=bot_name, global_privacy_level=privacy)
         from emotionai_pro.relationship_manager import DynamicWeightManager
@@ -163,7 +163,7 @@ class TestFormatEmotionalState(unittest.TestCase):
         state.descriptions.attitude = "对AI温柔"
         text = plugin._format_emotional_state(state)
         self.assertNotIn("AI", text)
-        self.assertIn("亲密玩闹的塔菲伙伴", text)
+        self.assertIn("亲密玩闹的小助手伙伴", text)
 
     def test_symbiosis_no_next_threshold(self):
         """共生期 → 显示已达最高阶段"""

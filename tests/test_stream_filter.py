@@ -92,7 +92,7 @@ class TestContentIntegrity(unittest.TestCase):
 
     def test_long_stream_lossless(self):
         random.seed(42)
-        base = "塔菲今天心情很好，想和你聊聊最近的事情。要不要一起出去玩呢？" * 20
+        base = "小助手今天心情很好，想和你聊聊最近的事情。要不要一起出去玩呢？" * 20
         chunks = []
         i = 0
         while i < len(base):

@@ -194,8 +194,8 @@ class TestMoodAmplitudeV414(unittest.TestCase):
     def test_mild_message_visible(self):
         """普通一句话（"谢谢"级，信号强度 2）也应把强度推到看得见的档位"""
         mood = GlobalMood()
-        apply_mood_update(mood, compute_mood_signal("谢谢塔菲"))
-        self.assertEqual(compute_mood_signal("谢谢塔菲"), {"trust": 1, "joy": 1})
+        apply_mood_update(mood, compute_mood_signal("谢谢小助手"))
+        self.assertEqual(compute_mood_signal("谢谢小助手"), {"trust": 1, "joy": 1})
         # 强度 2 ≥ MOOD_SPIKE_MIN → 冲高 20 → 强度 0.20（超出"心情平静"档）
         self.assertGreaterEqual(mood.intensity, 0.15)
 
@@ -209,7 +209,7 @@ class TestMoodAmplitudeV414(unittest.TestCase):
         """持续性互动才能冲上"情绪高涨"（不是一条消息）"""
         mood = GlobalMood()
         for _ in range(4):
-            apply_mood_update(mood, compute_mood_signal("塔菲好可爱！"))
+            apply_mood_update(mood, compute_mood_signal("小助手好可爱！"))
         self.assertGreater(mood.intensity, 0.7)
 
     def test_expert_channel_no_spike(self):
@@ -245,7 +245,7 @@ class TestMoodAmplitudeV414(unittest.TestCase):
         mood = GlobalMood()
         # 早上：被夸 → 喜悦冲高
         mood.updated_at = time.time() - 60
-        apply_mood_update(mood, compute_mood_signal("塔菲太可爱了！"))
+        apply_mood_update(mood, compute_mood_signal("小助手太可爱了！"))
         first = mood.dominant_emotion
         self.assertGreater(mood.intensity, 0.2)
 
@@ -293,10 +293,10 @@ class TestMoodChangeReasonV415(unittest.TestCase):
         before_dom, before_int = mood.dominant_emotion, mood.intensity
         apply_mood_update(mood, {"anger": 3})
         reason = build_mood_change_reason(
-            before_dom, before_int, mood, "听到「气死」", subject="永雏塔菲",
+            before_dom, before_int, mood, "听到「气死」", subject="测试助手",
         )
         self.assertIsNotNone(reason)
-        self.assertIn("永雏塔菲", reason)
+        self.assertIn("测试助手", reason)
         self.assertIn("听到「气死」", reason)
         self.assertIn("生气起来", reason)  # 翻到愤怒
 
@@ -346,10 +346,10 @@ class TestMoodChangeReasonV415(unittest.TestCase):
         apply_mood_update(mood, {"joy": 1})
         self.assertLess(mood.intensity, before_int - 0.05)
         reason = build_mood_change_reason(
-            before_dom, before_int, mood, "听到「喵」", subject="永雏塔菲",
+            before_dom, before_int, mood, "听到「喵」", subject="测试助手",
         )
         self.assertIsNotNone(reason)
-        self.assertIn("永雏塔菲", reason)
+        self.assertIn("测试助手", reason)
         self.assertIn("听到「喵」", reason)
         self.assertNotIn("因为", reason)  # 不把回落算到触发消息头上
         self.assertTrue(
@@ -360,7 +360,7 @@ class TestMoodChangeReasonV415(unittest.TestCase):
     def test_reason_persistence_roundtrip(self):
         """last_change_reason/last_change_at 随 to_dict/from_dict 往返"""
         mood = GlobalMood()
-        mood.last_change_reason = "因为听到「哈哈」，永雏塔菲变得开心起来"
+        mood.last_change_reason = "因为听到「哈哈」，测试助手变得开心起来"
         mood.last_change_at = 1234567890.0
         data = mood.to_dict()
         self.assertEqual(data["last_change_reason"], mood.last_change_reason)
@@ -402,7 +402,7 @@ class TestMoodChangeReasonV415(unittest.TestCase):
         mood = GlobalMood(emotions=EmotionalMetrics(joy=80, trust=40))
         mood._recompute()
         mood.updated_at = time.time() - 2 * 3600  # 4 个单位 → ×0.5^4=0.0625
-        mood.last_change_reason = "因为听到「哈哈」，永雏塔菲变得开心起来"
+        mood.last_change_reason = "因为听到「哈哈」，测试助手变得开心起来"
         preview = preview_time_decayed(mood)
         self.assertIsNot(preview, mood)
         self.assertEqual(preview.emotions.joy, int(80 * 0.0625))   # 5

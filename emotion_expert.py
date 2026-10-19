@@ -908,7 +908,7 @@ class EmotionAnalysisExpert:
         recent_attitude_text = "、".join(
             f"「{item}」" for item in recent_attitude
         ) or "无"
-        angle = pick_angle(state)
+        angle = pick_angle(state).format(bot_name=bot_name)
 
         return f"""你是一个情感分析专家，请分析以下对话的情感变化，输出JSON格式的分析结果。
 

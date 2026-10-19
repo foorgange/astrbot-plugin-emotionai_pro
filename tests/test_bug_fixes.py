@@ -214,11 +214,11 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
     根因：`RankingManager._format_user_display()` 的契约是**自带** `用户` 前缀
     （排行榜里 `{rank}. {display_name}` 是独立使用的，models.py 的
     `RankingEntry.display_name` 默认值也带前缀），而头部模板又写了一次「用户」，
-    于是输出成「【用户 用户3418451176 完整情感状态】」。
+    于是输出成「【用户 用户10001 完整情感状态】」。
     修法：模板去掉多余的「用户」，保留 `_format_user_display` 的前缀。
     """
 
-    USER_INPUT = "3418451176"
+    USER_INPUT = "10001"
 
     def _run_view_favor(self, user_input=None):
         from emotionai_pro.managers import RankingManager
@@ -293,15 +293,15 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
         self.assertNotIn("用户 用户", text)
 
     def test_header_uses_single_prefix(self):
-        """头部应为「【用户3418451176 完整情感状态】」"""
+        """头部应为「【用户10001 完整情感状态】」"""
         text = self._run_view_favor()
-        self.assertIn("【用户3418451176 完整情感状态】", text)
+        self.assertIn("【用户10001 完整情感状态】", text)
 
     def test_header_is_first_line(self):
         """头部仍是第一行，其余行不受影响"""
         text = self._run_view_favor()
         lines = text.splitlines()
-        self.assertEqual(lines[0], "【用户3418451176 完整情感状态】")
+        self.assertEqual(lines[0], "【用户10001 完整情感状态】")
         self.assertEqual(lines[1], f"用户标识: {self.USER_INPUT}")
 
     def test_no_user_prefix_when_unknown(self):

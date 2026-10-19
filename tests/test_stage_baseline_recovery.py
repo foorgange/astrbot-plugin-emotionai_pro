@@ -1,9 +1,9 @@
 # tests/test_stage_baseline_recovery.py
 """阶段过渡基线（_previous_stage）丢失后的恢复行为（v4.1.1）
 
-线上实例（用户 2961113185）复现的 bug：
+线上实例（某用户）复现的 bug：
     favor=108 / intimacy=118，实际早已在承诺期，面板却显示
-    「关注塔菲喵（初识期）+ 下一阶段：雏草姬（55+）+ 亲密度 118/120」。
+    「初见（初识期）+ 下一阶段：熟络（55+）+ 亲密度 118/120」。
 
 根因链：
   1. `_previous_stage` 只在 get_stage_info（展示路径）里推进，消息流
@@ -67,13 +67,13 @@ class TestMissingBaselineReconstructed(_RecoveryTestCase):
     """基线缺失时按分数归档，而不是猜 INITIAL"""
 
     def test_reported_case_shows_commitment_not_initial(self):
-        """用户 2961113185 的实例：应显示承诺期，而不是初识期"""
+        """某用户的实例：应显示承诺期，而不是初识期"""
         # 线上配置：亲密度上限 200、分档门槛 20/40/60、自定义阶段名
         EmotionConstants.configure(favour_min=-100, favour_max=200,
                               intimacy_min=-100, intimacy_max=200)
         configure_stage_names({
-            "初识期": "关注塔菲喵", "深化期": "雏草姬",
-            "承诺期": "永雏结晶", "共生期": "塔不灭",
+            "初识期": "初见", "深化期": "熟络",
+            "承诺期": "知己", "共生期": "同行",
         })
 
         state = _state(108, 118)
@@ -82,8 +82,8 @@ class TestMissingBaselineReconstructed(_RecoveryTestCase):
         self.assertEqual(
             info["stage"], "COMMITMENT",
             "老用户被打回初识期了（基线缺失被猜成 INITIAL）")
-        self.assertEqual(info["stage_name"], "永雏结晶")
-        self.assertEqual(info["next_stage_name"], "塔不灭")
+        self.assertEqual(info["stage_name"], "知己")
+        self.assertEqual(info["next_stage_name"], "同行")
         self.assertTrue(info["is_transitioning"])
 
         gate = info["intimacy_gate"]
@@ -261,8 +261,8 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         EmotionConstants.configure(favour_min=-100, favour_max=200,
                                   intimacy_min=-100, intimacy_max=200)
         configure_stage_names({
-            "初识期": "关注塔菲喵", "深化期": "雏草姬",
-            "承诺期": "永雏结晶", "共生期": "塔不灭",
+            "初识期": "初见", "深化期": "熟络",
+            "承诺期": "知己", "共生期": "同行",
         })
 
     def test_archived_commitment_kept_when_intimacy_below_gate(self):
@@ -270,13 +270,13 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         self._configure()
         # 复合分 90（承诺期档），亲密度 60 < 80
         state = _state(120, 60)
-        state.relationship_stage = "永雏结晶"
+        state.relationship_stage = "知己"
 
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "COMMITMENT",
                          "老用户在承诺期，却因为门槛被踩回深化期了")
-        self.assertEqual(info["stage_name"], "永雏结晶")
+        self.assertEqual(info["stage_name"], "知己")
         self.assertFalse(info["intimacy_gate_blocked"],
                          "已站在该阶段上，不该被自己的门槛卡住")
         self.assertIsNone(info["intimacy_gate"])
@@ -288,33 +288,33 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         self._configure()
         # 复合分 120（共生期档），亲密度 100 < 120
         state = _state(140, 100)
-        state.relationship_stage = "永雏结晶"
+        state.relationship_stage = "知己"
 
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "COMMITMENT",
                          "过渡被门槛挡住时应停留在当前阶段")
         self.assertTrue(info["intimacy_gate_blocked"])
-        self.assertEqual(info["stage_name"], "永雏结晶")
+        self.assertEqual(info["stage_name"], "知己")
 
         gate = info["intimacy_gate"]
         self.assertEqual(gate["required"], 120, "应按目标阶段(共生期 60%)取门槛")
         self.assertEqual(gate["current"], 100)
         self.assertEqual(gate["gap"], 20)
         self.assertEqual(gate["to_stage_key"], "SYMBIOSIS")
-        self.assertEqual(gate["to_stage"], "塔不灭")
+        self.assertEqual(gate["to_stage"], "同行")
 
     def test_archived_symbiosis_kept_despite_low_intimacy(self):
         """存档共生期 + 亲密度远低于 120 → 保持共生期（已是最高阶段）"""
         self._configure()
         state = _state(150, 50)
-        state.relationship_stage = "塔不灭"
+        state.relationship_stage = "同行"
 
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "SYMBIOSIS",
                          "老用户在共生期，却被打回承诺期了")
-        self.assertEqual(info["stage_name"], "塔不灭")
+        self.assertEqual(info["stage_name"], "同行")
         self.assertFalse(info["intimacy_gate_blocked"])
         self.assertIsNone(info["intimacy_gate"])
 
@@ -327,7 +327,7 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "COMMITMENT")
-        self.assertEqual(info["stage_name"], "永雏结晶")
+        self.assertEqual(info["stage_name"], "知己")
         self.assertFalse(info["intimacy_gate_blocked"])
 
     def test_non_positive_archived_name_ignored(self):
@@ -349,19 +349,19 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         self._configure()
         # 复合分 60，落在深化期档
         state = _state(60, 60)
-        state.relationship_stage = "永雏结晶"
+        state.relationship_stage = "知己"
 
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "DEEPENING")
-        self.assertEqual(info["stage_name"], "雏草姬")
+        self.assertEqual(info["stage_name"], "熟络")
         self.assertFalse(info["intimacy_gate_blocked"])
 
     def test_valid_baseline_still_wins_over_archived(self):
         """有有效基线时以基线为准（两者本应一致，这里锁死优先级）"""
         self._configure()
         state = _state(120, 60)
-        state.relationship_stage = "永雏结晶"
+        state.relationship_stage = "知己"
         state._previous_stage = "DEEPENING"
         state._previous_composite = 60.0
 
@@ -375,12 +375,12 @@ class TestArchivedStageNotDemoted(_RecoveryTestCase):
         """存档就是初识期（含默认值）：与 v4.1.1 行为完全一致"""
         self._configure()
         state = _state(108, 118)
-        state.relationship_stage = "关注塔菲喵"
+        state.relationship_stage = "初见"
 
         info = DynamicWeightManager.get_stage_info(state)
 
         self.assertEqual(info["stage"], "COMMITMENT")
-        self.assertEqual(info["stage_name"], "永雏结晶")
+        self.assertEqual(info["stage_name"], "知己")
         self.assertTrue(info["intimacy_gate_blocked"])
         self.assertEqual(info["intimacy_gate"]["gap"], 2)
 
@@ -393,8 +393,8 @@ class TestArchivedStageFloorThroughRepair(_RecoveryTestCase):
         EmotionConstants.configure(favour_min=-100, favour_max=200,
                                   intimacy_min=-100, intimacy_max=200)
         configure_stage_names({
-            "初识期": "关注塔菲喵", "深化期": "雏草姬",
-            "承诺期": "永雏结晶", "共生期": "塔不灭",
+            "初识期": "初见", "深化期": "熟络",
+            "承诺期": "知己", "共生期": "同行",
         })
         self._tmp = TemporaryDirectory()
         self.repo = UserStateRepository(Path(self._tmp.name))
@@ -408,7 +408,7 @@ class TestArchivedStageFloorThroughRepair(_RecoveryTestCase):
     def test_repaired_record_keeps_archived_stage(self):
         """损坏存档修复后：关系阶段还在，且阶段判定保持承诺期不降级"""
         state = _state(120, 60)
-        state.relationship_stage = "永雏结晶"
+        state.relationship_stage = "知己"
         payload = state.to_dict()
         payload.update(stats=None)  # 让 from_dict 抛错，强制走修复分支
         self.repo._user_data = {"u9": payload}
@@ -418,7 +418,7 @@ class TestArchivedStageFloorThroughRepair(_RecoveryTestCase):
 
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.favor, 120)
-        self.assertEqual(loaded.relationship_stage, "永雏结晶",
+        self.assertEqual(loaded.relationship_stage, "知己",
                          "修复把关系阶段丢了")
         self.assertIsNone(loaded._previous_stage, "基线应仍是缺失态")
 

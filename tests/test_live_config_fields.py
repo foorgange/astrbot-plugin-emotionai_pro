@@ -392,11 +392,11 @@ class TestConfigRepairInsteadOfReject(unittest.TestCase):
         cm = self._mk_manager()
         cfg = PluginConfig(
             change_min=3, change_max=2,
-            admin_qq_list=["3418451176"],
+            admin_qq_list=["10001"],
             favour_max=200,
         )
         cm._validate_config(cfg)
-        self.assertEqual(cfg.admin_qq_list, ["3418451176"],
+        self.assertEqual(cfg.admin_qq_list, ["10001"],
                          "修复坏字段时误伤了管理员列表")
         self.assertEqual(cfg.favour_max, 200)
 

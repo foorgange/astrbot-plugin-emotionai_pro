@@ -48,7 +48,7 @@ def _make_plugin(**cfg):
     plugin.config = PluginConfig(**cfg)
     plugin.weight_manager = DynamicWeightManager()
     plugin.analyzer = EmotionAnalyzer()
-    plugin._resolved_bot_name = "塔菲"
+    plugin._resolved_bot_name = "小助手"
     plugin._mood_cache = None
     plugin._mood_cache_time = 0.0
     plugin._get_mood_label = EmotionAIProPlugin._get_mood_label.__get__(plugin)

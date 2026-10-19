@@ -5,3 +5,26 @@ __pycache__/
 _emotionai_verify/
 _welcome_verify/
 _bay_deploy/
+
+# 本地运行数据 / 个人配置 / 密钥 / 部署临时文件，禁止提交
+data/
+plugin_data/
+config/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+*_config.json
+config.json
+*.local.json
+*.bak
+*.bak_*
+HANDOFF.md
+_deploy_tmp/
+tmp*/

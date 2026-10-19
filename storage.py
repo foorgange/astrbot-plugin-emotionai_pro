@@ -221,7 +221,7 @@ class UserStateRepository:
                               # 修复后的老用户 _previous_stage=None，
                               # calculate_stage 只能猜 INITIAL → 被打回
                               # 初识期并被最高阶段的门槛永久卡住
-                              # （线上实例：用户 2961113185）
+                              # （线上实例：某用户）
                               "_previous_stage", "_previous_composite"):
                     if field not in raw:
                         continue
@@ -425,7 +425,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.1.15'
+            'plugin_version': '4.1.16'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'

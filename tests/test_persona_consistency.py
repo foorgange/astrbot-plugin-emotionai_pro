@@ -3,14 +3,14 @@
 
 背景
 ----
-本插件是通用件，而相当多的人设（例如「永雏塔菲」）在 system_prompt 里明确写了
+本插件是通用件，而相当多的人设（例如「测试助手」）在 system_prompt 里明确写了
 「你不是 AI / 不要承认自己是 AI」。此前 `_build_enhanced_context` 的开头是：
 
     你是一个具有丰富情感的AI助手，请根据以下情感状态调整你的回应风格。
 
 这段文本被注入到**用户消息之后**（`extra_user_content_parts`），位置比 system_prompt
 更靠后、优先级更高，模型会因此把自己当成「通用 AI 助手」，导致人格漂移——
-塔菲开始用助手的口吻说话，而不是角色本身。
+小助手开始用助手的口吻说话，而不是角色本身。
 
 本文件锁死该行为，防止回归。
 """
@@ -72,7 +72,7 @@ class TestNoAiIdentityAssertion(unittest.TestCase):
     """核心：注入文本里不能有任何「你是 AI」类断言"""
 
     def setUp(self):
-        self.text = build(bot_name="塔菲")
+        self.text = build(bot_name="小助手")
 
     def test_old_wording_removed(self):
         """修复前那句必须彻底消失"""
@@ -107,17 +107,17 @@ class TestInjectedSubTextsSanitized(unittest.TestCase):
 
     def test_relationship_context_ai_replaced(self):
         text = build(
-            bot_name="塔菲",
+            bot_name="小助手",
             relationship_context="与用户的ai伙伴关系持续升温",
         )
         self.assertNotIn("ai伙伴", text)
-        self.assertIn("塔菲伙伴", text)
+        self.assertIn("小助手伙伴", text)
         self.assertIsNone(_AI_STANDALONE_RE.search(text))
 
     def test_tone_instruction_ai_replaced(self):
-        text = build(bot_name="塔菲", tone="像 AI 助手那样礼貌回复")
+        text = build(bot_name="小助手", tone="像 AI 助手那样礼貌回复")
         self.assertNotIn("AI 助手", text)
-        self.assertIn("塔菲 助手", text)
+        self.assertIn("小助手 助手", text)
         self.assertIsNone(_AI_STANDALONE_RE.search(text))
 
     def test_no_bot_name_is_safe_noop(self):
@@ -129,7 +129,7 @@ class TestInjectedSubTextsSanitized(unittest.TestCase):
 
     def test_memory_failure_falls_back(self):
         """记忆系统抛异常时走兜底文案，不影响注入结构"""
-        plugin = make_plugin(bot_name="塔菲")
+        plugin = make_plugin(bot_name="小助手")
         plugin.memory_system.get_relationship_context = MagicMock(
             side_effect=RuntimeError("boom")
         )

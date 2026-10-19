@@ -46,7 +46,7 @@ from emotionai_pro.models import EnhancedEmotionalState, TextDescriptions  # noq
 
 def _expert(**kw):
     """最小专家实例：只够跑提示词构建、解析与本地兜底"""
-    kw.setdefault("bot_name_provider", lambda: "永雏塔菲")
+    kw.setdefault("bot_name_provider", lambda: "测试助手")
     return EmotionAnalysisExpert(types.SimpleNamespace(), None, **kw)
 
 
@@ -325,7 +325,14 @@ class TestPromptDiversity(unittest.TestCase):
         self.assertIn("傲娇", prompt)
         self.assertIn("正常关系", prompt)
         self.assertIn("不要照抄上一版", prompt)
-        self.assertIn(pick_angle(state), prompt)
+        self.assertIn(pick_angle(state).format(bot_name="测试助手"), prompt)
+        self.assertNotIn("{bot_name}", prompt)
+
+    def test_angle_uses_configured_bot_name(self):
+        """角度里的 {bot_name} 必须替换为配置的人设名，不能硬编码某个人设"""
+        prompt = _expert()._build_emotion_analysis_prompt("你好", "你好呀", _state())
+        self.assertIn("测试助手", prompt)
+        self.assertNotIn("{bot_name}", prompt)
 
     def test_prompt_separates_relationship_and_attitude(self):
         prompt = _expert()._build_emotion_analysis_prompt("你好", "你好呀", _state())

@@ -67,7 +67,7 @@ class TestHashFailureDoesNotEscape(_CacheCase):
     def test_get_shard_does_not_raise(self):
         async def body(c):
             with self._broken_xxhash():
-                shard = c._get_shard("state_3418451176")
+                shard = c._get_shard("state_10001")
             self.assertIn(shard, c.shards)
 
         self._with_cache(body)
@@ -75,7 +75,7 @@ class TestHashFailureDoesNotEscape(_CacheCase):
     def test_falls_back_to_md5_shard(self):
         """降级后应落到 md5 算出来的那个分片，而不是随便一个"""
         async def body(c):
-            key = "state_3418451176"
+            key = "state_10001"
             with self._broken_xxhash():
                 shard = c._get_shard(key)
             expected = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16) % (
@@ -178,7 +178,7 @@ class TestNormalPathUnchanged(_CacheCase):
             self.skipTest("本环境无 xxhash")
 
         async def body(c):
-            key = "state_3418451176"
+            key = "state_10001"
             expected = cache_mod.xxhash.xxh64(key.encode("utf-8")).intdigest() % (
                 self.shard_count
             )
