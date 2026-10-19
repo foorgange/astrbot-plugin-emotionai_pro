@@ -313,5 +313,55 @@ class TestChainOrdering(unittest.TestCase):
         self.assertLess(sort_pos, slice_pos, "必须先排序再切片")
 
 
+class TestExcludedProviders(unittest.TestCase):
+    """v4.1.17：不合适的视觉模型不进入情感分析专家链"""
+
+    VL_ID = "siliconflow/Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+    def _ctx(self):
+        vl = FakeProvider(self.VL_ID)
+        main = FakeProvider("step/step-5-preview")
+        agnes = FakeProvider("agnes/agnes-2.5-flash")
+        providers = [vl, main, agnes]
+        by_id = {p.meta().id: p for p in providers}
+        return FakeContext(providers=providers, main=main, by_id=by_id), vl, main, agnes
+
+    def test_vision_provider_excluded_from_chain(self):
+        ctx, vl, main, agnes = self._ctx()
+        e = _expert(context=ctx, provider="agnes/agnes-2.5-flash")
+        chain = e._build_provider_chain()
+        ids = [e._get_provider_meta(p)[0] for p in chain]
+        self.assertNotIn(self.VL_ID, ids)
+        self.assertIn("agnes/agnes-2.5-flash", ids)
+        self.assertIn("step/step-5-preview", ids)
+        # provider 本身还在 AstrBot 列表里，只是不进专家链
+        self.assertIn(vl, ctx.get_all_providers())
+
+    def test_vision_provider_excluded_even_as_explicit_secondary(self):
+        """即使有人把辅助 LLM 配成这个视觉模型，也不能进入专家链"""
+        ctx, vl, main, agnes = self._ctx()
+        e = _expert(context=ctx, provider=self.VL_ID, max_providers=2)
+        chain = e._build_provider_chain()
+        ids = [e._get_provider_meta(p)[0] for p in chain]
+        self.assertNotIn(self.VL_ID, ids)
+        self.assertIn("step/step-5-preview", ids)
+
+    def test_vision_model_excluded_by_model_name(self):
+        """按 model 名也能排除（防止同一模型换一个 provider id）"""
+        class _OtherVlProvider(FakeProvider):
+            def __init__(self):
+                super().__init__("custom/vision")
+                self._meta.model = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+        vl = _OtherVlProvider()
+        main = FakeProvider("step/step-5-preview")
+        ctx = FakeContext(providers=[vl, main], main=main,
+                          by_id={p.meta().id: p for p in (vl, main)})
+        e = _expert(context=ctx, provider="custom/vision")
+        ids = [e._get_provider_meta(p)[0] for p in e._build_provider_chain()]
+        self.assertNotIn("custom/vision", ids)
+        self.assertIn("step/step-5-preview", ids)
+
+
 if __name__ == "__main__":
     unittest.main()

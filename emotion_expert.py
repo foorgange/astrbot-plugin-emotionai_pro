@@ -134,6 +134,18 @@ class EmotionAnalysisExpert:
     # 单次尝试的最低时间片：剩余预算低于此值就不再发起新的尝试
     MIN_SLICE = 3.0
 
+    # 不放进情感分析专家链的 provider / model。
+    #
+    # SiliconFlow 的 Qwen3-VL 是视觉模型，作为纯文本情感分析的兜底既慢又不稳；
+    # 这里只是从「专家链」排除，provider 本身仍保留在 AstrBot 配置里，
+    # meme_manager 的 auto_collect 等视觉功能仍可按需使用。
+    EXCLUDED_PROVIDER_IDS = frozenset({
+        "siliconflow/Qwen/Qwen3-VL-30B-A3B-Instruct",
+    })
+    EXCLUDED_PROVIDER_MODELS = frozenset({
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    })
+
     # 断路器禁用后的冷却时间（秒）。
     #
     # 旧实现在 `_llm_failures >= 3` 时把 `_llm_available` 置 False，而
@@ -480,6 +492,10 @@ class EmotionAnalysisExpert:
           4. 其余全部 provider（保持 get_all_providers 的顺序）
 
         后两项保证即使档案没配退避链，也有兜底候选可选。
+
+        v4.1.17：`EXCLUDED_PROVIDER_IDS` / `EXCLUDED_PROVIDER_MODELS` 里的
+        模型不会进入专家链（当前排除 SiliconFlow 的 Qwen3-VL 视觉模型），
+        但仍保留在 AstrBot provider 列表里供其它功能使用。
         """
         providers = self._get_all_providers()
         if not providers:
@@ -491,7 +507,11 @@ class EmotionAnalysisExpert:
         def add(provider) -> None:
             if provider is None:
                 return
-            pid, _ = self._get_provider_meta(provider)
+            pid, model = self._get_provider_meta(provider)
+            if pid in self.EXCLUDED_PROVIDER_IDS:
+                return
+            if model in self.EXCLUDED_PROVIDER_MODELS:
+                return
             key = pid or f"obj:{id(provider)}"
             if key in seen:
                 return
