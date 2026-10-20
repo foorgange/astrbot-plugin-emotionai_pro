@@ -40,6 +40,20 @@ from .image_format_guard import filter_image_urls, filter_unsupported_image_part
 # 边界用 [A-Za-z0-9] 而非 \w：\w 匹配中文，会漏掉“亲密玩闹的ai伙伴”这类核心场景
 _AI_STANDALONE_RE = re.compile(r'(?<![A-Za-z0-9])AI(?![A-Za-z0-9])', re.IGNORECASE)
 
+# v4.2.1：旧版本（< v4.0.11）的注入模板以「你是一个具有丰富情感的AI助手…」
+# 开头，而且当时的注入内容会被框架写进 conversations.history。只把「AI」
+# 替换成 bot_name 不够（bot_name 未解析时是空操作；替换成「塔菲助手」也仍
+# 是助手口吻）；下面这组常量只清洗**插件自己的旧注入块**，把整句身份断言
+# 换成现在的中性说明——用户消息里的「AI」原样保留。
+_LEGACY_CONTEXT_MARKER = "【机密情感系统 - 主对话模式】"
+_LEGACY_AI_IDENTITY_RE = re.compile(
+    r"你是一个具有丰富情感的\s*AI\s*助手[，,]?请根据以下情感状态调整你的回应风格。?"
+)
+_CLEAN_CONTEXT_INTRO = (
+    "以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，"
+    "在此基础上自然地调整语气、用词与情绪倾向。"
+)
+
 # 插件关闭时，等待在跑的后台情感分析任务自然收尾的宽限秒数；
 # 超时才取消（直接取消可能在 update_user_state 写盘中途打断）。
 # 提成模块常量是为了让测试能缩短它，不必真等 3 秒。
@@ -50,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.0")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.1")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -590,6 +604,153 @@ class EmotionAIProPlugin(Star):
             return text
         return _AI_STANDALONE_RE.sub(bot_name, text)
 
+    # v4.2.1：历史注入清洗的快照标记（与上下文保鲜共用
+    # _FRESHNESS_SNAPSHOT_KEY 存原始上下文，用本标记区分还原方式：
+    # 保鲜 = 清空后整体插回；历史清洗 = 条数不变、替换前缀）
+    _SANITIZED_CONTEXT_KEY = "_emotionai_sanitized_context"
+
+    def _sanitize_legacy_injected_text(self, text: str) -> str:
+        """清洗插件旧注入块里的 AI 身份断言（用户原文不动）。
+
+        v4.0.11 之前的模板首句是「你是一个具有丰富情感的AI助手…」，且当时
+        注入内容会被框架落盘进会话历史。旧历史里残留的这句断言会随
+        req.contexts 每轮进入模型请求，仅靠 _sanitize_ai_text 替换「AI」
+        既依赖 bot_name 是否解析成功，也仍保留助手口吻。这里只处理带
+        【机密情感系统 - 主对话模式】标记的文本块，把整句断言换成中性说明；
+        不含该标记的用户消息/历史原文一律不改。
+        """
+        if not isinstance(text, str) or not text:
+            return text
+        if _LEGACY_CONTEXT_MARKER not in text:
+            return text
+        cleaned = _LEGACY_AI_IDENTITY_RE.sub(_CLEAN_CONTEXT_INTRO, text)
+        if cleaned == text:
+            return text
+        return self._sanitize_ai_text(cleaned)
+
+    def _sanitize_legacy_content(self, content):
+        """递归清洗消息 content（str / parts 列表）；无改动时原样返回。"""
+        if isinstance(content, str):
+            cleaned = self._sanitize_legacy_injected_text(content)
+            return content if cleaned == content else cleaned
+        if isinstance(content, list):
+            changed = False
+            new_parts = []
+            for part in content:
+                new_part = part
+                if isinstance(part, str):
+                    cleaned = self._sanitize_legacy_injected_text(part)
+                    if cleaned != part:
+                        new_part = cleaned
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    cleaned = self._sanitize_legacy_injected_text(part["text"])
+                    if cleaned != part["text"]:
+                        new_part = dict(part)
+                        new_part["text"] = cleaned
+                if new_part is not part:
+                    changed = True
+                new_parts.append(new_part)
+            return new_parts if changed else content
+        return content
+
+    def _sanitize_legacy_context_identity(self, event: AstrMessageEvent,
+                                          req: ProviderRequest) -> int:
+        """请求期清洗历史消息里残留的旧 AI 身份断言，返回清洗条数。
+
+        只改本轮 provider 可见的 req.contexts：原始上下文快照进 event extras，
+        由 _restore_full_context 在 on_agent_done（框架落盘之前）把前缀替换回
+        原文，因此**会话数据库不会被改写**，也不会多/少任何消息。
+        """
+        try:
+            contexts = getattr(req, "contexts", None)
+            if not isinstance(contexts, list) or not contexts:
+                return 0
+            sanitized = []
+            changed = 0
+            for item in contexts:
+                if not isinstance(item, dict):
+                    sanitized.append(item)
+                    continue
+                content = item.get("content")
+                new_content = self._sanitize_legacy_content(content)
+                if new_content is content:
+                    sanitized.append(item)
+                    continue
+                new_item = dict(item)
+                new_item["content"] = new_content
+                sanitized.append(new_item)
+                changed += 1
+            if not changed:
+                return 0
+            snapshot_key = self._FRESHNESS_SNAPSHOT_KEY
+            if event.get_extra(snapshot_key) is None:
+                event.set_extra(snapshot_key, list(contexts))
+                event.set_extra(self._SANITIZED_CONTEXT_KEY, True)
+            req.contexts = sanitized
+            if not getattr(self, "_legacy_context_sanitize_logged", False):
+                self._legacy_context_sanitize_logged = True
+                logger.info(
+                    f"人设一致性: 检测到历史会话中残留 {changed} 条旧 AI 身份断言，"
+                    f"本轮请求已清洗（落盘历史随后还原，不修改聊天记录）"
+                )
+            else:
+                logger.debug(
+                    f"人设一致性: 本轮清洗 {changed} 条历史旧 AI 身份断言"
+                )
+            return changed
+        except Exception as e:
+            logger.warning(f"历史注入清洗失败，保持原上下文: {e}")
+            return 0
+
+    @staticmethod
+    def _message_text(message) -> str:
+        """提取 Message 的纯文本（用于定位历史注入块）。"""
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n".join(parts)
+        return ""
+
+    def _locate_sanitized_prefix(self, messages, restored):
+        """在 run_context.messages 中定位被清洗过的历史前缀，返回起始下标。
+
+        以「旧注入块标记」为锚点，并校验角色序列与 restored 完全一致；
+        任何不确定都返回 None（调用方保留清洗结果，绝不重复插入消息）。
+        """
+        marker_pos = None
+        for i, msg in enumerate(restored):
+            if _LEGACY_CONTEXT_MARKER in self._message_text(msg):
+                marker_pos = i
+                break
+        if marker_pos is None:
+            return None
+        for i, msg in enumerate(messages):
+            if _LEGACY_CONTEXT_MARKER not in self._message_text(msg):
+                continue
+            boundary = i - marker_pos
+            end = boundary + len(restored)
+            if boundary < 0 or end > len(messages):
+                return None
+            expected = [getattr(m, "role", None) for m in restored]
+            actual = [getattr(m, "role", None) for m in messages[boundary:end]]
+            if actual != expected:
+                return None
+            return boundary
+        return None
+
     # ==================== 全局心情（共享字段） ====================
 
     async def _mood_load_once(self):
@@ -853,6 +1014,11 @@ class EmotionAIProPlugin(Star):
         # v4.1.0：会话边界上下文保鲜（跨会话不继承旧话题，
         # 详见 _apply_context_freshness 注释）
         self._apply_context_freshness(event, req, state)
+
+        # v4.2.1：清洗旧版本落盘在会话历史里的 AI 身份断言。
+        # 必须放在保鲜之后：保鲜若已清空 contexts，这里自然无事可做；
+        # 否则只改本轮请求，_restore_full_context 会在落盘前还原原文。
+        self._sanitize_legacy_context_identity(event, req)
 
         # v4.1.7：图片格式守卫。必须在保鲜之后：保鲜快照的永远是
         # 未经滤染的原始上下文（数据库记录完好），过滤只作用于
@@ -1205,15 +1371,14 @@ class EmotionAIProPlugin(Star):
             return
         # 一次性快照，取完即清（异常也要清，避免污染同一事件的后续请求）
         event.set_extra(self._FRESHNESS_SNAPSHOT_KEY, None)
+        # v4.2.1：区分快照来源——保鲜是「清空后整体插回」，
+        # 历史注入清洗是「消息条数不变、替换前缀」。
+        sanitized_context = bool(event.get_extra(self._SANITIZED_CONTEXT_KEY))
+        event.set_extra(self._SANITIZED_CONTEXT_KEY, None)
         try:
             messages = getattr(run_context, "messages", None)
             if messages is None:
                 return
-            boundary = len(messages)
-            for i, msg in enumerate(messages):
-                if getattr(msg, "role", None) != "system":
-                    boundary = i
-                    break
             try:
                 from astrbot.core.agent.message import bind_checkpoint_messages
                 restored = bind_checkpoint_messages(full)
@@ -1226,10 +1391,31 @@ class EmotionAIProPlugin(Star):
                         if not is_checkpoint_message(item)
                     )
                 ]
-            messages[boundary:boundary] = restored
-            logger.info(
-                f"上下文保鲜: 已还原 {len(restored)} 条旧对话历史到会话记录"
-            )
+            if sanitized_context:
+                boundary = self._locate_sanitized_prefix(messages, restored)
+                if boundary is None:
+                    # 定位失败时保留本轮清洗结果（只差一句中性说明，不丢消息、
+                    # 也不重复插入），绝不能把原文错位插进去污染会话记录。
+                    logger.warning(
+                        "历史注入清洗还原校验失败，保留本轮清洗结果"
+                        "（消息条数不变，未改写数据库）"
+                    )
+                    return
+                messages[boundary:boundary + len(restored)] = restored
+                logger.debug(
+                    f"历史注入清洗: 已把 {len(restored)} 条历史消息还原为原文"
+                    f"（本轮请求对模型隐藏了旧 AI 身份断言）"
+                )
+            else:
+                boundary = len(messages)
+                for i, msg in enumerate(messages):
+                    if getattr(msg, "role", None) != "system":
+                        boundary = i
+                        break
+                messages[boundary:boundary] = restored
+                logger.info(
+                    f"上下文保鲜: 已还原 {len(restored)} 条旧对话历史到会话记录"
+                )
         except Exception as e:
             logger.warning(f"上下文保鲜还原失败，本轮会话记录可能不完整: {e}")
 

@@ -376,7 +376,7 @@ class AdminCommandHandler(BaseCommandHandler):
             yield event.plain_result(
                 f"【提示】用户 {user_input} 当前好感度为负（{state.favor}），"
                 f"处于负好感阶段：亲密度固定为 0 且不随互动变化，无法手动设置。\n"
-                f"可先用 /设置好感度 把好感度调到 0 以上，再设置亲密度。"
+                f"可先用「设置好感」命令把好感度调到 0 以上，再设置亲密度。"
             )
             event.stop_event()
             return

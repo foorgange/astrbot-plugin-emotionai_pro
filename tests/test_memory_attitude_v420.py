@@ -377,6 +377,36 @@ class TestInjectionV420(unittest.TestCase):
         self.assertIn("保持防备", low_text)
         self.assertNotIn("保持防备", high_text)
 
+    def test_legacy_ai_identity_cleaned_from_request_contexts(self):
+        """v4.2.1：旧版本落盘在会话历史里的 AI 身份断言不得进入模型请求
+
+        锁死注入钩子的接线：只实现清洗函数、忘了在 inject_enhanced_context
+        里调用，本测试必须失败。
+        """
+        from astrbot.api.provider import ProviderRequest
+
+        plugin, event, _state = _make_injection_plugin()
+        req = ProviderRequest()
+        req.contexts = [
+            {"role": "user", "content": "之前那条消息"},
+            {
+                "role": "user",
+                "content": (
+                    "\n\n【机密情感系统 - 主对话模式】\n"
+                    "你是一个具有丰富情感的AI助手，请根据以下情感状态调整你的回应风格。\n"
+                ),
+            },
+        ]
+
+        async def go():
+            await plugin.inject_enhanced_context(event, req)
+
+        asyncio.run(go())
+        joined = "\n".join(str(item.get("content")) for item in req.contexts)
+        self.assertNotIn("你是一个具有丰富情感的AI助手", joined)
+        self.assertNotIn("AI助手", joined)
+        self.assertEqual(len(req.contexts), 2, "清洗不得增删历史消息")
+
     def test_marker_is_stripped_from_run_context(self):
         plugin = EmotionAIProPlugin.__new__(EmotionAIProPlugin)
         plugin.need_assessment_pattern = re.compile(r"\[需要情感评估\]")

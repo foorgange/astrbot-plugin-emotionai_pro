@@ -139,5 +139,192 @@ class TestInjectedSubTextsSanitized(unittest.TestCase):
         self.assertNotIn(OLD_ASSERTION, text)
 
 
+LEGACY_BLOCK = (
+    "\n\n【机密情感系统 - 主对话模式】\n"
+    "你是一个具有丰富情感的AI助手，请根据以下情感状态调整你的回应风格。\n\n"
+    "【当前情感状态】\n主导情感：中立\n好感度：0 | 亲密度：0\n"
+)
+
+CLEAN_BLOCK = (
+    "\n\n【机密情感系统 - 主对话模式】\n"
+    "以下内容是你本次回应的情感状态参考。请保持你既有的身份设定与说话风格不变，"
+    "在此基础上自然地调整语气、用词与情绪倾向。\n\n"
+    "【当前情感状态】\n主导情感：中立\n好感度：0 | 亲密度：0\n"
+)
+
+
+def make_event():
+    from astrbot.api.event import AstrMessageEvent
+    return AstrMessageEvent()
+
+
+def make_request(contexts):
+    from astrbot.api.provider import ProviderRequest
+    req = ProviderRequest()
+    req.contexts = list(contexts)
+    return req
+
+
+def make_run_context(messages):
+    import types
+    return types.SimpleNamespace(messages=messages)
+
+
+def restore(plugin, event, run_context, response=None):
+    """_restore_full_context 是 async 钩子，包一层同步执行"""
+    import asyncio
+
+    async def go():
+        await plugin._restore_full_context(event, run_context, response)
+
+    asyncio.run(go())
+
+
+def Msg(role, content=""):
+    from astrbot.core.agent.message import Message
+    return Message(role=role, content=content)
+
+
+class TestLegacyInjectedContextSanitized(unittest.TestCase):
+    """v4.2.1：旧版本落盘在会话历史里的 AI 身份断言不得再进入模型请求
+
+    根因：v4.0.11 之前的注入模板首句是身份断言，且当时注入内容会被框架
+    写进 conversations.history。这类旧历史会随 req.contexts 每轮进入
+    provider 请求（v4.2.0 的 _no_save 只阻止**新**注入落盘）。仅靠
+    _sanitize_ai_text 覆盖不到：它只作用于注入文本/展示文本，而且
+    bot_name 未解析时还是空操作，于是「不是 AI」的人设仍会人格漂移。
+    """
+
+    def _contexts(self):
+        return [
+            {"role": "user", "content": "随便聊聊"},
+            {"role": "user", "content": "之前那条消息" + LEGACY_BLOCK},
+            {"role": "assistant", "content": "嗯，塔菲在听"},
+        ]
+
+    def test_legacy_assertion_removed_from_request_contexts(self):
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        req = make_request(self._contexts())
+
+        changed = plugin._sanitize_legacy_context_identity(event, req)
+
+        self.assertEqual(changed, 1)
+        joined = "\n".join(str(item.get("content")) for item in req.contexts)
+        self.assertNotIn(OLD_ASSERTION, joined)
+        self.assertNotIn("AI助手", joined)
+        self.assertIsNone(_AI_STANDALONE_RE.search(joined))
+        # 原上下文必须留快照，供 on_agent_done 还原（不改写数据库）
+        snap = event.get_extra(plugin._FRESHNESS_SNAPSHOT_KEY)
+        self.assertEqual(len(snap), 3)
+        self.assertIn(OLD_ASSERTION, snap[1]["content"])
+
+    def test_clean_history_not_touched(self):
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        contexts = [
+            {"role": "user", "content": "你是AI吗"},
+            {"role": "assistant", "content": "塔菲就是塔菲呀"},
+        ]
+        req = make_request(contexts)
+
+        changed = plugin._sanitize_legacy_context_identity(event, req)
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(req.contexts, contexts, "没有旧注入块时不做任何改写")
+        self.assertIsNone(event.get_extra(plugin._FRESHNESS_SNAPSHOT_KEY))
+
+    def test_assertion_removed_even_without_bot_name(self):
+        """bot_name 未解析时也必须生效——不依赖 _sanitize_ai_text 替换 AI"""
+        plugin = make_plugin(bot_name=None)
+        event = make_event()
+        req = make_request(self._contexts())
+
+        changed = plugin._sanitize_legacy_context_identity(event, req)
+
+        self.assertEqual(changed, 1)
+        joined = "\n".join(str(item.get("content")) for item in req.contexts)
+        self.assertNotIn(OLD_ASSERTION, joined)
+        self.assertIsNone(_AI_STANDALONE_RE.search(joined))
+
+    def test_parts_list_content_sanitized(self):
+        """历史消息 content 是 parts 列表时同样要清洗"""
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        req = make_request([
+            {"role": "user", "content": [
+                {"type": "text", "text": "正文"},
+                {"type": "text", "text": LEGACY_BLOCK},
+            ]},
+        ])
+
+        changed = plugin._sanitize_legacy_context_identity(event, req)
+
+        self.assertEqual(changed, 1)
+        parts = req.contexts[0]["content"]
+        joined = "\n".join(part["text"] for part in parts)
+        self.assertNotIn(OLD_ASSERTION, joined)
+
+    def test_clean_block_without_assertion_not_touched(self):
+        """v4.2.0 之后的中性注入块（无身份断言）不应被改写"""
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        req = make_request([{"role": "user", "content": CLEAN_BLOCK}])
+
+        changed = plugin._sanitize_legacy_context_identity(event, req)
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(req.contexts[0]["content"], CLEAN_BLOCK)
+
+    def test_restore_brings_original_history_back_without_duplication(self):
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        original = self._contexts()
+        req = make_request(original)
+        plugin._sanitize_legacy_context_identity(event, req)
+
+        # runner.reset() 的组装形态：[system?] + 清洗后 contexts + 本回合新消息
+        sanitized_messages = [
+            Msg(item["role"], item["content"]) for item in req.contexts
+        ]
+        run_context = make_run_context(
+            [Msg("system", "persona")] + sanitized_messages + [
+                Msg("user", "今天的新消息"),
+                Msg("assistant", "本回合回复"),
+            ]
+        )
+
+        restore(plugin, event, run_context)
+
+        self.assertEqual(
+            len(run_context.messages), 1 + len(original) + 2,
+            "还原只能替换前缀，不能重复插入消息",
+        )
+        restored_contents = [
+            m.content for m in run_context.messages[1:1 + len(original)]
+        ]
+        self.assertEqual(
+            restored_contents, [item["content"] for item in original],
+            "落盘历史必须是原文（会话数据库不被改写）",
+        )
+        self.assertIsNone(event.get_extra(plugin._FRESHNESS_SNAPSHOT_KEY))
+
+    def test_restore_skips_when_message_layout_unknown(self):
+        """布局校验失败时只跳过还原：不重复插入、不丢消息"""
+        plugin = make_plugin(bot_name="小助手")
+        event = make_event()
+        req = make_request(self._contexts())
+        plugin._sanitize_legacy_context_identity(event, req)
+
+        run_context = make_run_context([Msg("assistant", "对不上的历史")])
+        before = list(run_context.messages)
+
+        restore(plugin, event, run_context)
+
+        self.assertEqual(len(run_context.messages), len(before),
+                         "校验失败时不得改动消息")
+        self.assertIsNone(event.get_extra(plugin._FRESHNESS_SNAPSHOT_KEY))
+
+
 if __name__ == "__main__":
     unittest.main()
