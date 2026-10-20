@@ -73,6 +73,13 @@ class ConfigValidator:
             "enable_secondary_llm": {"type": "boolean"},
             "secondary_llm_provider": {"type": "string"},
             "secondary_llm_model": {"type": "string"},
+            # v4.2.3：辅助 LLM 退避链（有序 provider id 列表）。
+            # 顶层 additionalProperties=False，漏了它会让带该键的
+            # 配置文件在严格校验下被判非法。
+            "secondary_llm_fallback_providers": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
             # v4.1.10：情感分析 LLM 的时间预算与备选个数（补漏）。
             # 顶层是 additionalProperties=False，漏掉这两个键会让
             # 含有它们的配置文件在严格校验下被判非法。
@@ -179,6 +186,7 @@ class ConfigValidator:
             "enable_secondary_llm": True,
             "secondary_llm_provider": "",
             "secondary_llm_model": "",
+            "secondary_llm_fallback_providers": [],
             "emotion_llm_time_budget": 45.0,
             "emotion_llm_max_providers": 3,
             "bot_name": "",

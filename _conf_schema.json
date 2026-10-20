@@ -327,6 +327,14 @@
     "default": "",
     "hint": "一般留空：上面选中的提供商已经包含模型。此项只用于临时覆盖模型名（高级用法，WebUI 不显示，可在插件配置 JSON 里手动设置）。"
   },
+  "secondary_llm_fallback_providers": {
+    "description": "辅助LLM退避链（按顺序尝试）",
+    "type": "list",
+    "items": {"type": "string"},
+    "_special": "select_providers",
+    "default": [],
+    "hint": "辅助LLM请求失败时，按这里的顺序切换已配置模型。点按钮可多选、并上下调整顺序（与「回退对话模型列表」同一套选择器）；留空则走内置链：主 LLM → 档案回退模型 → 其余模型自动按健康分排序。配置了本列表时，会先按「辅助LLM + 本列表」的顺序尝试，再进入内置链。"
+  },
   "emotion_llm_time_budget": {
     "description": "情感分析总时间预算(秒)",
     "type": "float",

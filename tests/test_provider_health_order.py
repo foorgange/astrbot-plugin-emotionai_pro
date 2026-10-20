@@ -302,15 +302,22 @@ class TestChainOrdering(unittest.TestCase):
         self.assertEqual(p.calls, 3)
 
     def test_sorting_is_stable_sort_source_constraint(self):
-        """源码级约束：必须先排序再切片（防止回归成先切片后排序）"""
+        """源码级约束：必须先排序再切片（防止回归成先切片后排序）
+
+        v4.2.3 起链被拆成「显式段（用户配置的辅助 LLM + 退避链，保序）+
+        自动段（健康分排序）」，排序只作用于自动段，但「先排序再切片」的
+        约束必须仍然成立。
+        """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "emotion_expert.py"), "r", encoding="utf-8") as f:
             src = f.read()
-        sort_pos = src.find("self._provider_health.sort_providers(chain)")
+        sort_pos = src.find("self._provider_health.sort_providers(")
         slice_pos = src.find("ordered_chain[: self.max_providers]")
         self.assertGreater(sort_pos, 0, "备选链必须经过健康分排序")
         self.assertGreater(slice_pos, 0, "必须存在取前 N 个的切片")
         self.assertLess(sort_pos, slice_pos, "必须先排序再切片")
+        self.assertIn("auto_chain", src[sort_pos:sort_pos + 120],
+                      "健康分排序应作用于自动段 auto_chain")
 
 
 class TestExcludedProviders(unittest.TestCase):

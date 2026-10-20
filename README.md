@@ -1,4 +1,4 @@
-# EmotionAI Pro - 融合版情感智能插件 v4.2.2
+# EmotionAI Pro - 融合版情感智能插件 v4.2.3
 
 <p align="center">
   <img src="pic/preview.png" width="620" alt="EmotionAI Pro：好感度驱动的记忆、态度与心情系统" />
@@ -64,6 +64,7 @@ EmotionAI Pro 是一个给 AstrBot 使用的「情感与关系」插件。它不
 | `bot_name` | 必填，写你的角色名；留空会尝试从 AstrBot persona 自动提取 |
 | `enable_secondary_llm` | 建议开启；没有辅助模型时可用主模型兜底 |
 | `secondary_llm_provider` | 可选；从已配置的对话模型里下拉选择一个稳定、便宜、响应快的辅助模型（含回退链模型）；留空使用主模型 |
+| `secondary_llm_fallback_providers` | 可选；辅助模型的退避链，多选并上下排序（与「回退对话模型列表」同一套选择器）；留空则走内置链 |
 | `session_based` | 想让每个群聊/私聊独立计算情感时开启 |
 | `mood_influence_strength` | 心情影响强度，默认 `0.7`；想更明显可调到 `0.85~1.0` |
 | `enable_memory_recall` | 是否注入具体记忆片段；关闭后只注入关系统计 |
@@ -92,16 +93,17 @@ data/plugin_data/astrbot_plugin_emotionai_pro/emotionai_pro/
 
 ## 更新日志
 
-### v4.2.2（当前版本，2026-10-20：辅助 LLM 改为从已配置模型中选择）
+### v4.2.3（当前版本，2026-10-20：辅助 LLM 支持退避链）
 
-- 「辅助 LLM 提供商」改为下拉选择：直接列出你在 AstrBot 里已配置的全部对话模型（含回退链/退避链里的模型），不再需要手动输入提供商或模型名；
-- 选择器里点「未选择」即留空、使用主 LLM；原来的「辅助 LLM 模型」文本框降级为高级覆盖项（一般不需要，WebUI 不再显示，旧配置里手填的值仍然兼容）；
-- 只改配置界面，不影响情感分析的调用逻辑，也不改变已有的数值、记忆与心情行为。
+- 「辅助 LLM」旁新增「辅助 LLM 退避链（按顺序尝试）」：用与「回退对话模型列表」相同的多选选择器，从已配置模型里选多个并上下调整顺序；首选的辅助 LLM 失败时按你排的顺序依次切换；
+- 配置了退避链时，先按「辅助 LLM + 退避链」的顺序尝试，再进入内置链（主 LLM → 档案回退模型 → 其余模型按近期健康分排序）；显式退避链不会被自动健康分排序打乱顺序；
+- 留空时行为与上一版完全一致；只影响情感分析的模型选择，不改变数值、记忆与心情逻辑。
 
 ### 近期版本摘要
 
 | 版本 | 主要变化 |
 |---|---|
+| v4.2.2 | 辅助 LLM 改为从已配置模型下拉选择（含回退链模型），模型名文本框降为隐藏高级项 |
 | v4.2.1 | 旧版本写入会话历史的「AI 助手」身份断言改为每轮请求识别清洗（只影响本轮模型输入，不改写聊天记录） |
 | v4.2.0 | 好感度驱动长期记忆写入/召回、关系基线硬约束、心情影响强度与心情一致召回 |
 | v4.1.15 | 关系 / 态度描述去同质化：每轮轮换具体描写角度、避开高频套话，模型返回不佳时按关系远近使用五档兜底文案 |
@@ -190,6 +192,8 @@ data/plugin_data/astrbot_plugin_emotionai_pro/emotionai_pro/
 | `enable_attitude_system` | 启用 FavourPro 态度关系系统 | `true` |
 | `enable_ai_text_generation` | AI 自主生成态度/关系描述 | `true` |
 | `enable_secondary_llm` | 启用辅助 LLM 做情感分析 | `true` |
+| `secondary_llm_provider` | 辅助 LLM（从已配置模型下拉选择，留空用主模型） | 空 |
+| `secondary_llm_fallback_providers` | 辅助 LLM 退避链（有序多选，失败后按顺序切换） | `[]` |
 | `enable_smart_update` | 四维智能更新（关键词+时间+计数+标记） | `true` |
 | `force_update_interval` | 强制更新间隔（对话次数） | `5` |
 | `emotional_significance_threshold` | 长期记忆基础阈值；好感度会在此基础上动态加减 | `5` |

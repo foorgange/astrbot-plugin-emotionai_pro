@@ -158,6 +158,7 @@ class EmotionAnalysisExpert:
 
     def __init__(self, cache: ShardedTTLCache, context=None,
                  secondary_llm_provider: str = None, secondary_llm_model: str = None,
+                 fallback_provider_ids: Optional[List[str]] = None,
                  bot_name_provider=None, time_budget: float = 45.0,
                  max_providers: int = 3, change_min: int = -10,
                  change_max: int = 5, intimacy_change_min: int = -3,
@@ -168,6 +169,23 @@ class EmotionAnalysisExpert:
         self.context = context
         self.secondary_llm_provider = secondary_llm_provider
         self.secondary_llm_model = secondary_llm_model
+        # v4.2.3：显式配置的辅助 LLM 退避链（有序 provider id）
+        #
+        # 只接受非空字符串、保序去重；异常值一律忽略，绝不影响主流程。
+        # 该列表非空时：专家链 = [辅助LLM(若显式配置且匹配) + 本列表]（保持用户
+        # 顺序、不参与自动健康分排序）+ 自动链（主LLM → 档案回退模型 → 其余
+        # provider，按健康分排序）；留空时行为与 v4.1.14 完全一致。
+        raw_fallback_ids = fallback_provider_ids
+        if not isinstance(raw_fallback_ids, (list, tuple, set)):
+            raw_fallback_ids = []
+        fallback_ids: List[str] = []
+        for item in raw_fallback_ids:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            if cleaned and cleaned not in fallback_ids:
+                fallback_ids.append(cleaned)
+        self.secondary_llm_fallback_providers = fallback_ids
         self.bot_name_provider = bot_name_provider
         self.llm_timeout = 30.0
         self.llm_retry_count = 3
@@ -358,16 +376,20 @@ class EmotionAnalysisExpert:
         ⚠️ 这里只「读」provider 实例与 provider_settings，不修改任何配置，
         因此不会影响 AstrBot 主对话自身的退避重试机制。
         """
-        chain = self._build_provider_chain(umo)
-        if not chain:
+        explicit_chain, auto_chain = self._build_provider_chain_parts(umo)
+        if not explicit_chain and not auto_chain:
             logger.warning("没有可用的LLM提供商")
             return None
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.time_budget
 
-        # v4.1.14：健康分排序（稳定排序，同分保持构造顺序），再取前 N 个
-        ordered_chain = self._provider_health.sort_providers(chain)
+        # v4.1.14：健康分排序（稳定排序，同分保持构造顺序）。
+        # v4.2.3：只对「自动段」排序；显式配置的辅助 LLM 退避链保持
+        # 用户排的顺序（配置就是优先级，不能被健康分静默打乱）。
+        ordered_chain = list(explicit_chain) + self._provider_health.sort_providers(
+            auto_chain
+        )
         attempts = list(ordered_chain[: self.max_providers])
         if len(attempts) == 1:
             # 只有一个候选时，保留原有的「同一 provider 重试」语义
@@ -480,31 +502,45 @@ class EmotionAnalysisExpert:
             logger.error(f"读取档案退避链失败: {e}")
             return []
 
-    def _build_provider_chain(self, umo: str = None) -> List[Any]:
-        """构造情感分析的备选 provider 链（有序、按 id 去重）
+    def _configured_fallback_provider_ids(self) -> List[str]:
+        """读取配置里的辅助 LLM 退避链（保序去重；异常配置退化为空列表）"""
+        raw = getattr(self, "secondary_llm_fallback_providers", None)
+        if not isinstance(raw, (list, tuple)):
+            return []
+        ids: List[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            if cleaned and cleaned not in ids:
+                ids.append(cleaned)
+        return ids
 
-        顺序：
-          1. `_find_target_provider` 的结果 —— 与改动前的首选完全一致
-             （辅助LLM → 会话主LLM → deepseek/default → providers[0]）
-          2. 当前会话的主 LLM —— 显式配置了辅助 LLM 时，第 1 步只会返回辅助
-             LLM，这里补上主 LLM 作为第二候选（按 id 去重，重复时自动忽略）
-          3. 当前档案配置的 fallback_chat_models（复用用户已有配置，只读）
-          4. 其余全部 provider（保持 get_all_providers 的顺序）
+    def _build_provider_chain_parts(
+        self, umo: str = None,
+    ) -> tuple[List[Any], List[Any]]:
+        """构造「显式段 + 自动段」两段 provider 候选。
 
-        后两项保证即使档案没配退避链，也有兜底候选可选。
+        显式段（保持用户顺序，不参与自动健康分排序）：
+          1. 显式配置且匹配到的辅助 LLM
+          2. 配置里 `secondary_llm_fallback_providers` 的模型（按顺序）
+        自动段（会被健康分排序）：
+          3. 会话主 LLM
+          4. 档案里的 fallback_chat_models（只读复用）
+          5. 其余全部 provider
 
-        v4.1.17：`EXCLUDED_PROVIDER_IDS` / `EXCLUDED_PROVIDER_MODELS` 里的
-        模型不会进入专家链（当前排除 SiliconFlow 的 Qwen3-VL 视觉模型），
-        但仍保留在 AstrBot provider 列表里供其它功能使用。
+        未配置退避链时：显式段为空、自动段 = 旧版构造顺序
+        （首选项 → 主 LLM → 档案退避链 → 其余），等价 v4.1.14 行为。
         """
         providers = self._get_all_providers()
         if not providers:
-            return []
+            return [], []
 
-        chain: List[Any] = []
+        explicit: List[Any] = []
+        auto: List[Any] = []
         seen = set()
 
-        def add(provider) -> None:
+        def add(target: List[Any], provider) -> None:
             if provider is None:
                 return
             pid, model = self._get_provider_meta(provider)
@@ -516,26 +552,60 @@ class EmotionAnalysisExpert:
             if key in seen:
                 return
             seen.add(key)
-            chain.append(provider)
+            target.append(provider)
 
-        # 1. 首选（与旧行为一致）
-        try:
-            add(self._find_target_provider(providers, umo))
-        except Exception as e:
-            logger.error(f"首选 provider 解析失败: {e}")
+        configured_ids = self._configured_fallback_provider_ids()
+        if configured_ids:
+            # ---- 显式段（用户配置的辅助 LLM + 退避链，保持顺序）----
+            try:
+                add(explicit, self._match_configured_secondary(providers))
+            except Exception as e:
+                logger.error(f"辅助LLM首选解析失败: {e}")
+            for provider_id in configured_ids:
+                provider = self._get_provider_by_id(provider_id)
+                if provider is None:
+                    # get_provider_by_id 缺实现时退化为按 id 精确匹配
+                    provider = next(
+                        (
+                            p for p in providers
+                            if self._get_provider_meta(p)[0] == provider_id
+                        ),
+                        None,
+                    )
+                if provider is None:
+                    logger.warning(
+                        f"辅助LLM退避链中的 provider 不存在或不可用，已跳过: {provider_id}"
+                    )
+                    continue
+                add(explicit, provider)
+            # ---- 自动段 ----
+            add(auto, self._get_main_provider(umo))
+            for provider_id in self._resolve_fallback_provider_ids(umo):
+                add(auto, self._get_provider_by_id(provider_id))
+            for provider in providers:
+                add(auto, provider)
+        else:
+            # 未配置辅助退避链：完全保持旧版顺序（整链交给健康分排序）
+            try:
+                add(auto, self._find_target_provider(providers, umo))
+            except Exception as e:
+                logger.error(f"首选 provider 解析失败: {e}")
+            add(auto, self._get_main_provider(umo))
+            for provider_id in self._resolve_fallback_provider_ids(umo):
+                add(auto, self._get_provider_by_id(provider_id))
+            for provider in providers:
+                add(auto, provider)
 
-        # 2. 会话主 LLM（辅助 LLM 已命中时的第二候选）
-        add(self._get_main_provider(umo))
+        return explicit, auto
 
-        # 3. 档案里配置的退避链
-        for provider_id in self._resolve_fallback_provider_ids(umo):
-            add(self._get_provider_by_id(provider_id))
+    def _build_provider_chain(self, umo: str = None) -> List[Any]:
+        """完整候选链（显式段 + 自动段），供日志/测试/兼容旧调用。
 
-        # 4. 其余全部
-        for provider in providers:
-            add(provider)
-
-        return chain
+        真正决定尝试顺序的是 `_call_real_llm_with_retry`：它只对自动段
+        做健康分排序，显式段保持用户配置的顺序。
+        """
+        explicit, auto = self._build_provider_chain_parts(umo)
+        return explicit + auto
 
     async def _call_real_llm(self, user_message: str, ai_response: str,
                              state: EnhancedEmotionalState,
@@ -626,6 +696,25 @@ class EmotionAnalysisExpert:
             logger.error(f"获取主LLM失败，回退到名称匹配: {e}")
             return None
 
+    def _match_configured_secondary(self, providers: List) -> Optional[Any]:
+        """仅匹配「显式配置的辅助 LLM」，不做主 LLM/兜底回退。
+
+        与 `_find_target_provider` 的第 1 步同一口径（provider id / model
+        子串匹配）。v4.2.3 起显式退避链需要知道「用户是否真的配了首选」，
+        所以把它拆成独立 helper，避免把「主 LLM 兜底」也当成显式首选。
+        """
+        if not self.secondary_llm_provider or not providers:
+            return None
+        target = str(self.secondary_llm_provider).strip().lower()
+        if not target:
+            return None
+        for provider in providers:
+            pid, model = self._get_provider_meta(provider)
+            if target in pid.lower() or target in model.lower():
+                logger.info(f"找到配置的辅助LLM提供商: {pid}")
+                return provider
+        return None
+
     def _find_target_provider(self, providers: List, umo: str = None) -> Optional[Any]:
         """按优先级选择情感分析所使用的 provider
 
@@ -639,15 +728,11 @@ class EmotionAnalysisExpert:
             return None
 
         # 1. 显式配置的辅助 LLM
-        if self.secondary_llm_provider:
-            target = self.secondary_llm_provider.strip().lower()
-            if target:
-                for provider in providers:
-                    pid, model = self._get_provider_meta(provider)
-                    if target in pid.lower() or target in model.lower():
-                        logger.info(f"找到配置的辅助LLM提供商: {pid}")
-                        return provider
-                logger.warning(f"未匹配到辅助LLM提供商 [{self.secondary_llm_provider}]，回退到主LLM")
+        matched = self._match_configured_secondary(providers)
+        if matched is not None:
+            return matched
+        if self.secondary_llm_provider and str(self.secondary_llm_provider).strip():
+            logger.warning(f"未匹配到辅助LLM提供商 [{self.secondary_llm_provider}]，回退到主LLM")
 
         # 2. 未配置 → 使用主 LLM
         main_provider = self._get_main_provider(umo)

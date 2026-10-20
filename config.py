@@ -128,6 +128,16 @@ class PluginConfig(BaseModel):
     enable_secondary_llm: bool = Field(default=True, description="启用辅助LLM进行情感分析")
     secondary_llm_provider: Optional[str] = Field(default=None, description="辅助LLM提供商")
     secondary_llm_model: Optional[str] = Field(default=None, description="辅助LLM模型名称")
+    # v4.2.3：辅助 LLM 退避链（有序 provider id 列表）
+    #
+    # 首选的辅助 LLM 失败时，按用户配置的顺序切换到这些已配置模型；
+    # 留空则维持 v4.1.14 起的自动逻辑（主 LLM → 档案回退模型 → 其余
+    # provider 按健康分排序）。显式退避链内部保持用户顺序、不参与自动
+    # 健康分排序，避免用户精心排的优先级被静默打乱。
+    secondary_llm_fallback_providers: Optional[List[str]] = Field(
+        default_factory=list,
+        description="辅助LLM退避链（有序 provider id 列表）",
+    )
     emotion_llm_time_budget: float = Field(default=45.0, ge=10.0, le=300.0, description="情感分析总时间预算(秒)，预算耗尽即放弃LLM分析，降级为本地兜底")
     emotion_llm_max_providers: int = Field(default=3, ge=1, le=10, description="情感分析预算内最多尝试的provider个数")
     bot_name: Optional[str] = Field(default=None, description="机器人人设名称，留空则首次启动自动从 AstrBot persona 提取")

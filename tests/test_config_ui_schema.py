@@ -39,6 +39,15 @@ class TestSecondaryLlmUiSchema(unittest.TestCase):
         self.assertEqual(node.get("type"), "string")
         self.assertEqual(node.get("default"), "")
 
+    def test_fallback_chain_uses_multi_provider_selector(self):
+        """v4.2.3：辅助 LLM 退避链 = 多选 + 可排序（与回退对话模型列表同款）"""
+        schema = load_schema()
+        node = schema["secondary_llm_fallback_providers"]
+        self.assertEqual(node.get("_special"), "select_providers")
+        self.assertEqual(node.get("type"), "list")
+        self.assertEqual(node.get("items"), {"type": "string"})
+        self.assertEqual(node.get("default"), [])
+
     def test_model_override_is_hidden_advanced(self):
         schema = load_schema()
         node = schema["secondary_llm_model"]
@@ -54,7 +63,13 @@ class TestSecondaryLlmUiSchema(unittest.TestCase):
             for key, node in schema.items()
             if isinstance(node, dict) and node.get("_special")
         }
-        self.assertEqual(special, {"secondary_llm_provider": "select_provider"})
+        self.assertEqual(
+            special,
+            {
+                "secondary_llm_provider": "select_provider",
+                "secondary_llm_fallback_providers": "select_providers",
+            },
+        )
 
     def test_schema_keeps_crlf_and_no_bom(self):
         """仓库 JSON 约定：无 BOM、统一 CRLF（防止改 UI 时被编辑器混入 LF）"""
@@ -69,9 +84,12 @@ class TestSecondaryLlmUiSchema(unittest.TestCase):
 
         self.assertIn("secondary_llm_provider", PluginConfig.model_fields)
         self.assertIn("secondary_llm_model", PluginConfig.model_fields)
+        self.assertIn("secondary_llm_fallback_providers",
+                      PluginConfig.model_fields)
         props = ConfigValidator.CONFIG_SCHEMA["properties"]
         self.assertIn("secondary_llm_provider", props)
         self.assertIn("secondary_llm_model", props)
+        self.assertIn("secondary_llm_fallback_providers", props)
 
 
 if __name__ == "__main__":
