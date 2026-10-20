@@ -314,16 +314,18 @@
     "hint": "开启后使用额外的LLM专门分析情感状态和更新关系态度"
   },
   "secondary_llm_provider": {
-    "description": "辅助LLM提供商",
-    "type": "string", 
+    "description": "辅助LLM提供商（从已配置模型中选择）",
+    "type": "string",
+    "_special": "select_provider",
     "default": "",
-    "hint": "用于情感分析的LLM提供商名称，留空则使用主LLM"
+    "hint": "下拉列出 AstrBot 里已配置的全部对话模型（含回退链/退避链里的模型），点「未选择」即留空、改用主 LLM。每个选项就是一个已配置模型（提供商标识/模型名）。"
   },
   "secondary_llm_model": {
-    "description": "辅助LLM模型",
+    "description": "辅助LLM模型名覆盖（高级）",
     "type": "string",
+    "invisible": true,
     "default": "",
-    "hint": "用于情感分析的LLM模型名称"
+    "hint": "一般留空：上面选中的提供商已经包含模型。此项只用于临时覆盖模型名（高级用法，WebUI 不显示，可在插件配置 JSON 里手动设置）。"
   },
   "emotion_llm_time_budget": {
     "description": "情感分析总时间预算(秒)",
