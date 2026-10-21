@@ -24,110 +24,6 @@ from .description_diversity import (
     sanitize_description,
 )
 
-class ProviderHealthTracker:
-    """备选 provider 的健康度追踪：按近期成功率动态排序（v4.1.14）
-
-    背景：备选链是**静态顺序**——配置的辅助 LLM → 会话主 LLM → 档案
-    退避链 → 其余 provider，而免费模型的可用性随时间波动（限流 429、
-    额度耗尽、负载高响应慢）。静态顺序的后果：「配置里靠前但当前
-    不可用」的 provider 先烧掉时间片，后面存活的候选可能永远轮不到
-    （`max_providers` 只取前 N 个；线上实锤：step 系 + 商汤系同时
-    不可用时，链尾存活的 agnes 系排第 7+，从不被尝试）。
-
-    做法：进程内记录每个 provider 近窗口期的尝试结果，备选链按健康分
-    排序后再取前 N 个——**稳定的往前放，不稳定的沉底**。无历史记录
-    的 provider 取中性分（先于已知挂掉的，次于已知稳定的），保证
-    新 provider 仍有机会被探索。
-
-    设计约束：
-      · 纯内存、同步更新（asyncio 单线程下无锁安全）；
-      · 旧样本随时间窗口自然淘汰，provider 恢复后分数自动回升；
-      · 排序用稳定排序，同分保持构造顺序（配置的优先级仍是次级依据）。
-    """
-
-    # 只统计近这么长时间内的尝试（秒）。免费模型的不可用通常是
-    # 分钟~小时级（限流窗口/额度），30 分钟足以反映当前态势。
-    WINDOW_SECONDS = 1800.0
-    # 每个 provider 最多保留的样本数（超出丢最旧的，防止内存增长）
-    MAX_SAMPLES = 20
-    # 拉普拉斯平滑先验：无记录时分数 = 1/2 = 0.5（中性）
-    PRIOR_SUCCESS = 1.0
-    PRIOR_TOTAL = 2.0
-
-    def __init__(self):
-        # provider_key -> deque[(timestamp, success)]
-        self._samples: Dict[str, Any] = {}
-
-    @staticmethod
-    def provider_key(provider) -> str:
-        """provider 的健康档案键。
-
-        与备选链去重同一口径：优先取 meta().id，取不到退化为对象
-        id（测试替身/非标准对象也不会炸）。
-        """
-        pid = ""
-        meta = getattr(provider, "meta", None)
-        try:
-            if callable(meta):
-                meta = meta()
-            if meta is not None:
-                pid = str(getattr(meta, "id", "") or "")
-        except Exception:
-            pid = ""
-        if not pid:
-            pid = str(getattr(provider, "name", "") or "")
-        return pid or f"obj:{id(provider)}"
-
-    def _pruned(self, key: str, now: float):
-        """取出该 provider 窗口内的有效样本（顺带清掉过期/超量样本）"""
-        samples = self._samples.get(key)
-        if not samples:
-            return []
-        cutoff = now - self.WINDOW_SECONDS
-        fresh = [(ts, ok) for ts, ok in samples if ts >= cutoff]
-        if len(fresh) > self.MAX_SAMPLES:
-            fresh = fresh[-self.MAX_SAMPLES:]
-        if fresh:
-            self._samples[key] = fresh
-        else:
-            self._samples.pop(key, None)
-        return fresh
-
-    def record(self, key: str, success: bool, now: float = None) -> None:
-        """记录一次尝试结果（同步方法，调用方不得在 await 之间拆分）"""
-        ts = time.time() if now is None else float(now)
-        samples = self._samples.setdefault(key, [])
-        samples.append((ts, bool(success)))
-        # 顺手修剪，避免字典无限增长
-        self._pruned(key, ts)
-
-    def score(self, key: str, now: float = None) -> float:
-        """健康分（0~1）：窗口内成功率的拉普拉斯平滑估计
-
-        · 无记录 → 0.5（中性）
-        · 1 成功 0 失败 → 0.67；1 失败 → 0.33
-        · 连续失败会快速沉底，恢复成功后迅速回升
-        """
-        ts = time.time() if now is None else float(now)
-        fresh = self._pruned(key, ts)
-        if not fresh:
-            return self.PRIOR_SUCCESS / self.PRIOR_TOTAL
-        successes = sum(1 for _, ok in fresh if ok)
-        return (successes + self.PRIOR_SUCCESS) / (len(fresh) + self.PRIOR_TOTAL)
-
-    def sort_providers(self, providers: List[Any], now: float = None) -> List[Any]:
-        """按健康分降序排列（稳定排序：同分保持原顺序）"""
-        ts = time.time() if now is None else float(now)
-        return sorted(
-            providers,
-            key=lambda p: -self.score(self.provider_key(p), ts),
-        )
-
-    def reset(self) -> None:
-        """清空全部健康记录（测试用）"""
-        self._samples.clear()
-
-
 class EmotionAnalysisExpert:
     """情感分析专家 - 完全修复版本"""
 
@@ -197,10 +93,6 @@ class EmotionAnalysisExpert:
         # text_chat 是否接受 request_max_retries 的检测结果按类缓存，
         # 避免每轮情感分析都做一次 inspect.signature
         self._fast_fail_support_cache: Dict[type, bool] = {}
-        # provider 健康度追踪（v4.1.14）：备选链按近期成功率动态排序，
-        # 稳定的往前放、不稳定的沉底，避免「配置靠前但当前不可用」的
-        # provider 连续烧掉时间片、链尾存活的候选永远轮不到。
-        self._provider_health = ProviderHealthTracker()
 
         # 单次情感变化幅度（v4.0.20 修正）
         #
@@ -358,38 +250,27 @@ class EmotionAnalysisExpert:
                                       umo: str = None) -> Optional[str]:
         """在总时间预算内，沿备选链依次尝试各 provider。
 
-        旧实现是「同一个 provider 重试 llm_retry_count 次」，最坏
-        llm_retry_count × llm_timeout ≈ 90s 才降级，而且主 provider 一旦
-        不可用就完全没有冗余。现在改为：
+        v4.2.4 起，链 = [首选辅助 LLM] + [配置的退避链]，严格按配置
+        顺序（不再自动拼接会话主 LLM / 档案 fallback_chat_models /
+        其余 provider，也不做健康分动态排序）：在 `time_budget` 秒的
+        总预算内最多尝试 `max_providers` 次；任一成功即返回；全部失败
+        或预算耗尽则返回 None，由调用方降级到 smart_fallback。
 
-        1. 构造备选链（辅助LLM → 会话主LLM → 档案里的 fallback_chat_models
-           → 其它 provider，按 id 去重，见 `_build_provider_chain`）；
-        1b. v4.1.14：按 provider 近期健康分对备选链排序（稳定优先），
-            再取前 max_providers 个——免费模型可用性随时间波动，
-            静态顺序会让「配置靠前但当前不可用」的 provider 先烧掉
-            时间片，链尾存活的候选永远轮不到；
-        2. 在 `time_budget` 秒的总预算内，最多尝试 `max_providers` 次；
-        3. 单次时间片 = min(llm_timeout, 预算 / max_providers)，且不超过剩余预算；
-        4. 任一成功即返回；全部失败或预算耗尽则返回 None，由调用方降级到
-           smart_fallback。
-
-        ⚠️ 这里只「读」provider 实例与 provider_settings，不修改任何配置，
+        ⚠️ 这里只「读」provider 实例，不修改任何配置，
         因此不会影响 AstrBot 主对话自身的退避重试机制。
         """
-        explicit_chain, auto_chain = self._build_provider_chain_parts(umo)
-        if not explicit_chain and not auto_chain:
-            logger.warning("没有可用的LLM提供商")
+        explicit_chain, _auto_chain = self._build_provider_chain_parts(umo)
+        if not explicit_chain:
+            logger.warning(
+                "没有可用的LLM提供商（未配置辅助LLM，或配置的模型都解析不到）"
+            )
             return None
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.time_budget
 
-        # v4.1.14：健康分排序（稳定排序，同分保持构造顺序）。
-        # v4.2.3：只对「自动段」排序；显式配置的辅助 LLM 退避链保持
-        # 用户排的顺序（配置就是优先级，不能被健康分静默打乱）。
-        ordered_chain = list(explicit_chain) + self._provider_health.sort_providers(
-            auto_chain
-        )
+        # v4.2.4：自动段已移除，链 = 显式配置段，严格按配置顺序
+        ordered_chain = list(explicit_chain)
         attempts = list(ordered_chain[: self.max_providers])
         if len(attempts) == 1:
             # 只有一个候选时，保留原有的「同一 provider 重试」语义
@@ -422,7 +303,6 @@ class EmotionAnalysisExpert:
 
             timeout = min(slice_, max(self.MIN_SLICE, deadline - loop.time()))
             name = self._get_provider_name(provider)
-            health_key = self._provider_health.provider_key(provider)
             logger.warning(f"情感分析尝试 [{index}/{len(attempts)}] provider={name} 超时={timeout:.1f}s")
 
             try:
@@ -434,8 +314,6 @@ class EmotionAnalysisExpert:
                 result = None
 
             succeeded = bool(result) and len(result) > 10  # 确保有足够的返回内容
-            # v4.1.14：记录本次尝试结果，驱动下一轮的排序（同步更新）
-            self._provider_health.record(health_key, succeeded)
 
             if succeeded:
                 logger.info(f"情感分析成功: provider={name}")
@@ -476,32 +354,6 @@ class EmotionAnalysisExpert:
             logger.error(f"按 id 解析 provider 失败 [{provider_id}]: {e}")
             return None
 
-    def _resolve_fallback_provider_ids(self, umo: str = None) -> List[str]:
-        """读取当前会话档案里配置的 fallback_chat_models（只读，不修改）
-
-        provider_settings 取自 umo 解析后的档案，因此不同会话可以有不同的链。
-        任何异常都退化为空列表，绝不影响情感分析主流程。
-        """
-        if self.context is None:
-            return []
-        getter = getattr(self.context, "get_config", None)
-        if not callable(getter):
-            return []
-        try:
-            cfg = getter(umo)
-            if cfg is None:
-                return []
-            provider_settings = cfg.get("provider_settings", {})
-            if not isinstance(provider_settings, dict):
-                return []
-            ids = provider_settings.get("fallback_chat_models", [])
-            if not isinstance(ids, (list, tuple)):
-                return []
-            return [str(i).strip() for i in ids if isinstance(i, str) and i.strip()]
-        except Exception as e:
-            logger.error(f"读取档案退避链失败: {e}")
-            return []
-
     def _configured_fallback_provider_ids(self) -> List[str]:
         """读取配置里的辅助 LLM 退避链（保序去重；异常配置退化为空列表）"""
         raw = getattr(self, "secondary_llm_fallback_providers", None)
@@ -519,28 +371,29 @@ class EmotionAnalysisExpert:
     def _build_provider_chain_parts(
         self, umo: str = None,
     ) -> tuple[List[Any], List[Any]]:
-        """构造「显式段 + 自动段」两段 provider 候选。
+        """构造情感分析的 provider 候选链（v4.2.4：仅显式配置段）。
 
-        显式段（保持用户顺序，不参与自动健康分排序）：
-          1. 显式配置且匹配到的辅助 LLM
-          2. 配置里 `secondary_llm_fallback_providers` 的模型（按顺序）
-        自动段（会被健康分排序）：
-          3. 会话主 LLM
-          4. 档案里的 fallback_chat_models（只读复用）
-          5. 其余全部 provider
+        链 = [首选辅助 LLM] + [配置的退避链]，严格按配置顺序：
+          1. 首选：`secondary_llm_provider`（按 id / model 匹配）；
+          2. 退避链：`secondary_llm_fallback_providers`（按用户排的顺序，
+             未知/解析不到的 id 跳过并告警）。
 
-        未配置退避链时：显式段为空、自动段 = 旧版构造顺序
-        （首选项 → 主 LLM → 档案退避链 → 其余），等价 v4.1.14 行为。
+        v4.2.3 及以前的「自动段」（会话主 LLM → 档案 fallback_chat_models
+        → 其余全部 provider，按健康分排序）已整体移除：情感分析只使用
+        用户显式配置的模型，顺序即优先级，不做任何动态调整；未配置时
+        链为空，由调用方降级到本地兜底。
+
+        返回 (chain, [])：第二个元素恒为空列表，仅为兼容既有调用方的
+        解包签名；umo 参数保留（签名兼容），不再参与链构造。
         """
         providers = self._get_all_providers()
         if not providers:
             return [], []
 
-        explicit: List[Any] = []
-        auto: List[Any] = []
+        chain: List[Any] = []
         seen = set()
 
-        def add(target: List[Any], provider) -> None:
+        def add(provider) -> None:
             if provider is None:
                 return
             pid, model = self._get_provider_meta(provider)
@@ -552,60 +405,43 @@ class EmotionAnalysisExpert:
             if key in seen:
                 return
             seen.add(key)
-            target.append(provider)
+            chain.append(provider)
 
-        configured_ids = self._configured_fallback_provider_ids()
-        if configured_ids:
-            # ---- 显式段（用户配置的辅助 LLM + 退避链，保持顺序）----
-            try:
-                add(explicit, self._match_configured_secondary(providers))
-            except Exception as e:
-                logger.error(f"辅助LLM首选解析失败: {e}")
-            for provider_id in configured_ids:
-                provider = self._get_provider_by_id(provider_id)
-                if provider is None:
-                    # get_provider_by_id 缺实现时退化为按 id 精确匹配
-                    provider = next(
-                        (
-                            p for p in providers
-                            if self._get_provider_meta(p)[0] == provider_id
-                        ),
-                        None,
-                    )
-                if provider is None:
-                    logger.warning(
-                        f"辅助LLM退避链中的 provider 不存在或不可用，已跳过: {provider_id}"
-                    )
-                    continue
-                add(explicit, provider)
-            # ---- 自动段 ----
-            add(auto, self._get_main_provider(umo))
-            for provider_id in self._resolve_fallback_provider_ids(umo):
-                add(auto, self._get_provider_by_id(provider_id))
-            for provider in providers:
-                add(auto, provider)
-        else:
-            # 未配置辅助退避链：完全保持旧版顺序（整链交给健康分排序）
-            try:
-                add(auto, self._find_target_provider(providers, umo))
-            except Exception as e:
-                logger.error(f"首选 provider 解析失败: {e}")
-            add(auto, self._get_main_provider(umo))
-            for provider_id in self._resolve_fallback_provider_ids(umo):
-                add(auto, self._get_provider_by_id(provider_id))
-            for provider in providers:
-                add(auto, provider)
+        # 首选辅助 LLM
+        try:
+            add(self._match_configured_secondary(providers))
+        except Exception as e:
+            logger.error(f"辅助LLM首选解析失败: {e}")
 
-        return explicit, auto
+        # 配置的退避链（按用户排的顺序）
+        for provider_id in self._configured_fallback_provider_ids():
+            provider = self._get_provider_by_id(provider_id)
+            if provider is None:
+                # get_provider_by_id 缺实现时退化为按 id 精确匹配
+                provider = next(
+                    (
+                        p for p in providers
+                        if self._get_provider_meta(p)[0] == provider_id
+                    ),
+                    None,
+                )
+            if provider is None:
+                logger.warning(
+                    f"辅助LLM退避链中的 provider 不存在或不可用，已跳过: {provider_id}"
+                )
+                continue
+            add(provider)
+
+        return chain, []
 
     def _build_provider_chain(self, umo: str = None) -> List[Any]:
-        """完整候选链（显式段 + 自动段），供日志/测试/兼容旧调用。
+        """完整候选链（= 显式配置段），供日志/测试/兼容旧调用。
 
-        真正决定尝试顺序的是 `_call_real_llm_with_retry`：它只对自动段
-        做健康分排序，显式段保持用户配置的顺序。
+        v4.2.4 起自动段已移除：链就是「首选辅助 LLM + 配置的退避链」，
+        严格按配置顺序，`_call_real_llm_with_retry` 直接按序尝试。
         """
-        explicit, auto = self._build_provider_chain_parts(umo)
-        return explicit + auto
+        chain, _auto = self._build_provider_chain_parts(umo)
+        return chain
 
     async def _call_real_llm(self, user_message: str, ai_response: str,
                              state: EnhancedEmotionalState,

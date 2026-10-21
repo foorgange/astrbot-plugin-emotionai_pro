@@ -140,11 +140,16 @@ class FakeCache:
 
 
 def _expert(providers=(), cache=None):
+    """构造专家；v4.2.4 起链只走配置，故按 providers 顺序自动配成
+    「首选 + 退避链」（本文件锁定的是快速失败/断路器行为，链构造由
+    test_secondary_fallback_chain.py 单独覆盖）。"""
+    ids = [p.meta().id for p in providers]
     return EmotionAnalysisExpert(
         cache=cache,
         context=FakeContext(providers),
-        secondary_llm_provider=None,
+        secondary_llm_provider=ids[0] if ids else None,
         secondary_llm_model=None,
+        fallback_provider_ids=ids[1:],
         time_budget=45.0,
         max_providers=3,
     )

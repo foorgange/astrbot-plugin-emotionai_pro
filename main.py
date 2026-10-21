@@ -64,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.3")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.4")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

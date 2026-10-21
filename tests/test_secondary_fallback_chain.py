@@ -1,17 +1,21 @@
 # tests/test_secondary_fallback_chain.py
-"""v4.2.3：辅助 LLM 退避链（有序多选配置 + 专家链显式优先）
+"""v4.2.4：辅助 LLM 退避链（有序多选配置；自动段已移除）
 
-背景：v4.2.2 把「辅助 LLM 提供商」改成从已配置模型下拉选择，但只能选一个；
-用户要求失败时还能按自己排的顺序退避，因此新增
+背景：v4.2.2 把「辅助 LLM 提供商」改成从已配置模型下拉选择，v4.2.3 新增
 `secondary_llm_fallback_providers`（多选有序 provider id 列表，WebUI 用与
 ds-flash「回退对话模型列表」相同的 ProviderSelector 多选）。
 
+v4.2.4 起（用户要求「自动段的逻辑全部删掉」）：专家链 = [首选辅助 LLM] +
+[配置的退避链]，严格按配置顺序；v4.2.3 及以前的自动段（会话主 LLM →
+档案 fallback_chat_models → 其余 provider，按健康分排序）整体移除，
+ProviderHealthTracker 一并删除。
+
 本文件锁定的行为契约：
-1. 配置了退避链时，专家链 = [辅助 LLM（若显式配置且匹配）] + [退避链（按配置
-   顺序）] + 自动链（主 LLM → 档案 fallback_chat_models → 其余 provider）。
-2. **显式段保持用户顺序**：不参与自动健康分排序、不会被健康的自动候选挤到后面。
-3. 未配置退避链时，链构造与 v4.1.14 完全一致（整链交给健康分排序）。
-4. 未知/非法 id 一律跳过并告警，不崩。
+1. 链 = [首选辅助 LLM（若显式配置且匹配）] + [退避链（按配置顺序）]，
+   没有别的候选；
+2. **配置的顺序就是优先级**：不做任何动态调整（健康分排序已移除）；
+3. 未配置时链为空（首选留空且退避链为空），调用方降级本地兜底；
+4. 未知/非法 id 一律跳过并告警，不崩；
 5. 配置五处联动：config.py / main.py base_mapping+构造参数 / schema_validator /
    _conf_schema.json / 真实消费方（专家链）。
 """
@@ -118,7 +122,7 @@ def _read_source(filename):
 
 
 class TestChainOrder(unittest.TestCase):
-    """显式退避链在链中的位置与顺序"""
+    """显式配置段在链中的位置与顺序（v4.2.4：链 = 首选 + 退避链，无自动段）"""
 
     def _ctx(self):
         secondary = FakeProvider("vendor/secondary")
@@ -140,18 +144,16 @@ class TestChainOrder(unittest.TestCase):
                     fallback_ids=["vendor/fb1", "vendor/fb2"])
         self.assertEqual(
             _names(e, e._build_provider_chain()),
-            ["vendor/secondary", "vendor/fb1", "vendor/fb2",
-             "vendor/main", "vendor/rest"],
+            ["vendor/secondary", "vendor/fb1", "vendor/fb2"],
         )
 
-    def test_no_configured_chain_keeps_legacy_order(self):
-        """留空 → 与 v4.1.14 相同：辅助 LLM → 主 LLM → 其余（含全部 provider）"""
+    def test_no_configured_chain_uses_secondary_only(self):
+        """留空退避链 → 链 = [首选]，不再拼接主 LLM / 其余 provider"""
         ctx, secondary, fb1, fb2, main, rest = self._ctx()
         e = _expert(context=ctx, provider="vendor/secondary", fallback_ids=None)
         self.assertEqual(
             _names(e, e._build_provider_chain()),
-            ["vendor/secondary", "vendor/main", "vendor/rest",
-             "vendor/fb1", "vendor/fb2"],
+            ["vendor/secondary"],
         )
 
     def test_unknown_and_duplicate_ids_are_skipped(self):
@@ -164,24 +166,38 @@ class TestChainOrder(unittest.TestCase):
         )
         self.assertEqual(
             _names(e, e._build_provider_chain()),
-            ["vendor/secondary", "vendor/fb2", "vendor/main", "vendor/rest",
-             "vendor/fb1"],
+            ["vendor/secondary", "vendor/fb2"],
         )
 
-    def test_configured_chain_without_secondary_still_used_first(self):
-        """只配了退避链、没配首选时：退避链仍在自动链之前被尝试"""
+    def test_configured_chain_without_secondary_forms_the_chain(self):
+        """只配了退避链、没配首选时：退避链按配置顺序成链"""
         ctx, secondary, fb1, fb2, main, rest = self._ctx()
         e = _expert(context=ctx, provider=None,
                     fallback_ids=["vendor/fb2"])
         self.assertEqual(
             _names(e, e._build_provider_chain()),
-            ["vendor/fb2", "vendor/main", "vendor/rest",
-             "vendor/secondary", "vendor/fb1"],
+            ["vendor/fb2"],
         )
 
+    def test_no_config_at_all_yields_empty_chain(self):
+        """首选与退避链都没配 → 空链（调用方降级本地兜底，不再自动找模型）"""
+        ctx, secondary, fb1, fb2, main, rest = self._ctx()
+        e = _expert(context=ctx, provider=None, fallback_ids=None)
+        self.assertEqual(e._build_provider_chain(), [])
 
-class TestExplicitOrderSurvivesHealthSorting(unittest.TestCase):
-    """显式段不参与自动健康分排序（用户配置的顺序就是优先级）"""
+    def test_auto_segment_removed(self):
+        """自动段整体移除：会话主 LLM 与其余未配置 provider 不进链"""
+        ctx, secondary, fb1, fb2, main, rest = self._ctx()
+        e = _expert(context=ctx, provider="vendor/secondary",
+                    fallback_ids=["vendor/fb1"])
+        chain_ids = _names(e, e._build_provider_chain())
+        self.assertEqual(chain_ids, ["vendor/secondary", "vendor/fb1"])
+        self.assertNotIn("vendor/main", chain_ids)
+        self.assertNotIn("vendor/rest", chain_ids)
+
+
+class TestConfiguredOrderIsPriority(unittest.TestCase):
+    """配置的顺序就是优先级：不做任何动态调整（v4.2.4 移除健康分排序）"""
 
     def _ctx(self):
         secondary = FakeProvider("vendor/secondary", behavior="raise")
@@ -195,16 +211,12 @@ class TestExplicitOrderSurvivesHealthSorting(unittest.TestCase):
             by_id={p.meta().id: p for p in providers},
         ), secondary, fb1, fb2, main
 
-    def test_explicit_order_not_reordered_by_health(self):
+    def test_configured_order_followed_regardless_of_behavior(self):
+        """首选/退避链按配置顺序依次尝试，靠后的可用模型不能插队"""
         ctx, secondary, fb1, fb2, main = self._ctx()
         e = _expert(context=ctx, provider="vendor/secondary",
                     fallback_ids=["vendor/fb1", "vendor/fb2"],
                     max_providers=4)
-        # 人为制造健康分鸿沟：自动段 main 全成功、显式段 fb1 全失败
-        for _ in range(5):
-            e._provider_health.record(e._provider_health.provider_key(main), True)
-        for _ in range(5):
-            e._provider_health.record(e._provider_health.provider_key(fb1), False)
 
         order = []
 
@@ -220,40 +232,15 @@ class TestExplicitOrderSurvivesHealthSorting(unittest.TestCase):
             e._call_real_llm_with_retry("你好", "你好", _state(), "umo-x")
         )
         self.assertEqual(result, _OK_TEXT)
-        # 失败的首选/退避链第一项依次尝试，然后 fb2 成功（main 健康分再高也不能插队）
-        self.assertEqual(order[:3],
-                         ["vendor/secondary", "vendor/fb1", "vendor/fb2"])
-
-    def test_auto_segment_still_health_sorted(self):
-        """未配置退避链时，整条自动链仍按健康分排序（v4.1.14 不回归）"""
-        keep = FakeProvider("vendor/keep", behavior="ok")
-        dead = FakeProvider("vendor/dead", behavior="raise")
-        main = FakeProvider("vendor/main", behavior="ok")
-        ctx = FakeContext(
-            providers=[dead, keep, main],
-            main=main,
-            by_id={p.meta().id: p for p in (dead, keep, main)},
+        self.assertEqual(
+            order, ["vendor/secondary", "vendor/fb1", "vendor/fb2"]
         )
-        e = _expert(context=ctx, provider=None, max_providers=3)
-        for _ in range(5):
-            e._provider_health.record(e._provider_health.provider_key(keep), True)
-        for _ in range(5):
-            e._provider_health.record(e._provider_health.provider_key(dead), False)
 
-        order = []
-        orig = e._execute_llm_call
-
-        async def tracking(provider, prompt, timeout=None):
-            order.append(provider.meta().id)
-            return await orig(provider, prompt, timeout=timeout)
-
-        e._execute_llm_call = tracking
-        result = asyncio.run(
-            e._call_real_llm_with_retry("你好", "你好", _state(), "umo-x")
-        )
-        self.assertEqual(result, _OK_TEXT)
-        # 未配置显式链 → 整条自动链按健康分排序：稳定的 keep 升到最前并直接成功
-        self.assertEqual(order, ["vendor/keep"])
+    def test_chain_has_no_health_sorting(self):
+        """源码级约束：专家链不得再出现健康分排序（自动段已移除）"""
+        src = _read_source("emotion_expert.py")
+        self.assertNotIn("sort_providers", src)
+        self.assertNotIn("_provider_health", src)
 
 
 class TestConfigPlumbing(unittest.TestCase):

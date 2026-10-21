@@ -6,13 +6,14 @@
     llm_timeout(30s)，最坏约 90s 才降级到 smart_fallback；主 provider 一旦
     不可用就完全没有冗余。
 
-改动后：
-    在 time_budget 秒的总预算内，沿备选链
-    （辅助LLM → 会话主LLM → 档案里的 fallback_chat_models → 其它 provider）
-    最多尝试 max_providers 次，任一成功即返回；预算耗尽即降级。
+改动后（v4.2.4 起链只走配置）：
+    在 time_budget 秒的总预算内，沿备选链（首选辅助LLM → 配置的退避链，
+    严格按配置顺序）最多尝试 max_providers 次，任一成功即返回；预算耗尽
+    即降级。v4.2.3 及以前的自动段（会话主LLM / 档案 fallback_chat_models /
+    其余 provider）已移除，链构造契约见 test_secondary_fallback_chain.py。
 
 本文件同时锁定一条硬约束：**不得影响 AstrBot 主对话自身的退避重试机制**。
-插件对 provider / provider_settings 全程只读，不会写回 fallback_chat_models。
+插件对 provider 配置全程只读，不会写回 fallback_chat_models。
 """
 import asyncio
 import json
@@ -133,11 +134,23 @@ class FakeCache:
 
 def _expert(context=None, provider=None, model=None, budget=45.0,
             max_providers=3, cache=None):
+    """构造专家；v4.2.4 起链只走配置：未显式指定首选时，按 context 里的
+    provider 顺序自动配成「首选 + 退避链」（本文件的预算/切换测试需要一条
+    已知顺序的链；链构造契约由 test_secondary_fallback_chain.py 单独锁定）。"""
+    fallback_ids = None
+    if provider is None and context is not None:
+        try:
+            ids = [p.meta().id for p in context.get_all_providers()]
+        except Exception:
+            ids = []
+        provider = ids[0] if ids else None
+        fallback_ids = ids[1:]
     return EmotionAnalysisExpert(
         cache=cache,
         context=context,
         secondary_llm_provider=provider,
         secondary_llm_model=model,
+        fallback_provider_ids=fallback_ids,
         time_budget=budget,
         max_providers=max_providers,
     )
@@ -224,7 +237,9 @@ class TestBudgetConfig(unittest.TestCase):
 class TestProviderChain(unittest.TestCase):
     """链的顺序、去重与容错"""
 
-    def test_chain_order_is_secondary_main_archive_rest(self):
+    def test_chain_is_secondary_only_when_no_plugin_fallback(self):
+        """只配了首选、没配插件退避链时：链 = [首选]；
+        档案里的 fallback_chat_models 不再被复用（自动段已移除）"""
         secondary = FakeProvider("vendor/secondary")
         main = FakeProvider("商汤/deepseek-v4-flash")
         arch1 = FakeProvider("vendor/arch1")
@@ -242,8 +257,7 @@ class TestProviderChain(unittest.TestCase):
 
         self.assertEqual(
             [e._get_provider_name(p) for p in chain],
-            ["vendor/secondary", "商汤/deepseek-v4-flash",
-             "vendor/arch1", "vendor/arch2", "vendor/rest"],
+            ["vendor/secondary"],
         )
 
     def test_chain_dedups_by_provider_id(self):
@@ -297,16 +311,6 @@ class TestProviderChain(unittest.TestCase):
         ctx.provider_settings = {"fallback_chat_models": "vendor/x"}
         e = _expert(context=ctx)
         self.assertEqual(len(e._build_provider_chain("umo-x")), 1)
-
-    def test_resolve_fallback_ids_filters_non_strings(self):
-        ctx = FakeContext(providers=[FakeProvider("vendor/a")])
-        ctx.provider_settings = {
-            "fallback_chat_models": ["vendor/ok", 123, None, "  ", "vendor/ok2"]
-        }
-        e = _expert(context=ctx)
-        self.assertEqual(e._resolve_fallback_provider_ids("umo-x"),
-                         ["vendor/ok", "vendor/ok2"])
-
 
 # ==================== 预算与切换行为 ====================
 
@@ -437,16 +441,16 @@ class TestBudgetedFallback(unittest.TestCase):
         self.assertEqual(p2.calls, 1)
         self.assertEqual(p3.calls, 0)
 
-    def test_umo_is_passed_to_config_and_provider_lookup(self):
+    def test_umo_accepted_without_provider_lookup(self):
+        """v4.2.4 起 umo 不再驱动 provider/配置查询（链只走配置），
+        但传入 umo 不得影响链构造与切换行为"""
         p1 = FakeProvider("vendor/a", behavior="raise")
         p2 = FakeProvider("vendor/b")
-        ctx = FakeContext(providers=[p1, p2], main=None,
-                          fallback_ids=["vendor/b"],
-                          by_id={"vendor/b": p2})
+        ctx = FakeContext(providers=[p1, p2], main=None)
         e = _expert(context=ctx)
         self.assertEqual(_call(e, "aiocqhttp:GroupMessage:123"), _OK_TEXT)
-        self.assertGreaterEqual(ctx.config_reads, 1)
-        self.assertIn("aiocqhttp:GroupMessage:123", ctx.received_umos)
+        self.assertEqual(p1.calls, 1)
+        self.assertEqual(p2.calls, 1)
 
     def test_no_providers_returns_none_without_raising(self):
         e = _expert(context=FakeContext(providers=[]))
@@ -517,10 +521,10 @@ class TestDoesNotTouchAstrBotFallback(unittest.TestCase):
                     f"{filename} 不应出现 provider 写入调用 {token}()",
                 )
 
-    def test_fallback_chat_models_is_only_read(self):
-        """fallback_chat_models 只能以 .get() 读取，不得赋值"""
+    def test_provider_settings_never_written(self):
+        """v4.2.4 起插件不再读取档案 provider_settings（自动段已移除），
+        但「绝不写回 AstrBot 退避配置」的红线仍然成立"""
         src = _read_source("emotion_expert.py")
-        self.assertIn('provider_settings.get("fallback_chat_models"', src)
         self.assertNotIn('["fallback_chat_models"] =', src)
         self.assertNotIn("['fallback_chat_models'] =", src)
         self.assertNotIn("fallback_chat_models\"].append", src)
@@ -534,7 +538,6 @@ class TestDoesNotTouchAstrBotFallback(unittest.TestCase):
 
         e = _expert(context=ctx)
         e._build_provider_chain("umo-x")
-        e._resolve_fallback_provider_ids("umo-x")
         _call(e, "umo-x")
 
         after = json.dumps(ctx.provider_settings, sort_keys=True)
