@@ -2,19 +2,15 @@
 import time
 import asyncio
 import math
-from typing import Dict, Any, Optional, List, Set, Tuple, Deque
-from pathlib import Path
-from collections import defaultdict, deque
+from typing import Dict, Any, Optional, List, Set, Tuple
 import re
-from dataclasses import asdict
-import hashlib
 
 from astrbot.api import logger
 
-from .models import EnhancedEmotionalState, RankingEntry, InteractionStats
-from .storage import UserStateRepository, BackupManager
+from .models import EnhancedEmotionalState, RankingEntry
+from .storage import UserStateRepository
 from .cache import MIN_HIT_RATE_SAMPLE, ShardedTTLCache
-from .constants import UpdateThresholds, TimeConstants, EmotionConstants
+from .constants import UpdateThresholds, TimeConstants
 from .config import PluginConfig
 from .stage_names import get_stage_name
 
@@ -556,50 +552,6 @@ class RankingManager:
         except Exception as e:
             logger.error(f"缓存预热失败: {e}")
     
-    async def get_ranking_stats(self) -> Dict[str, Any]:
-        """获取排行榜统计信息"""
-        try:
-            all_states = await self.user_manager.repository.get_all_user_states()
-            
-            if not all_states:
-                return {
-                    'total_users': 0,
-                    'average_favor': 0,
-                    'average_intimacy': 0,
-                    'top_users': []
-                }
-            
-            total_favor = 0
-            total_intimacy = 0
-            user_count = len(all_states)
-            
-            for state in all_states.values():
-                total_favor += state.favor
-                total_intimacy += state.intimacy
-            
-            # 获取前5名用户
-            top_users = []
-            rankings = await self.get_enhanced_ranking(5, True)
-            for entry in rankings:
-                top_users.append({
-                    'rank': entry.rank,
-                    'display_name': entry.display_name,
-                    'average_score': entry.average_score,
-                    'favor': entry.favor,
-                    'intimacy': entry.intimacy
-                })
-            
-            return {
-                'total_users': user_count,
-                'average_favor': total_favor / user_count,
-                'average_intimacy': total_intimacy / user_count,
-                'top_users': top_users
-            }
-            
-        except Exception as e:
-            logger.error(f"获取排行榜统计失败: {e}")
-            return {}
-
 class SmartUpdateManager:
     """智能更新管理器 - 增强版本"""
     
@@ -622,9 +574,6 @@ class SmartUpdateManager:
             'emoticon_negative': re.compile(r'[:：][(（]|😠|😡|😢|😭|😤')
         }
         
-        # 缓存分析结果
-        self.analysis_cache = {}
-        self.cache_max_size = 1000
     
     def should_update_emotion(self, current_state: EnhancedEmotionalState, 
                             user_message: str, ai_response: str) -> Tuple[bool, str, int]:
@@ -774,39 +723,6 @@ class SmartUpdateManager:
         
         return False
     
-    def get_conversation_analysis(self, user_message: str, ai_response: str) -> Dict[str, Any]:
-        """获取对话情感分析"""
-        # 生成缓存键
-        cache_key = hashlib.md5(f"{user_message}_{ai_response}".encode()).hexdigest()[:16]
-        
-        # 检查缓存
-        if cache_key in self.analysis_cache:
-            return self.analysis_cache[cache_key]
-        
-        analysis = self._analyze_emotional_keywords(user_message, ai_response)
-        
-        # 添加更多分析维度
-        analysis['message_length'] = len(user_message)
-        analysis['response_length'] = len(ai_response)
-        
-        # 简单的情感倾向分析
-        if analysis['category'] in ['positive', 'positive_intimate']:
-            analysis['sentiment'] = 'positive'
-        elif analysis['category'] in ['negative', 'negative_conflict']:
-            analysis['sentiment'] = 'negative'
-        else:
-            analysis['sentiment'] = 'neutral'
-        
-        # 缓存结果
-        if len(self.analysis_cache) >= self.cache_max_size:
-            # 删除最旧的条目
-            oldest_key = next(iter(self.analysis_cache))
-            del self.analysis_cache[oldest_key]
-        
-        self.analysis_cache[cache_key] = analysis
-        
-        return analysis
-
 class EmotionAnalyzer:
     """情感分析器 - 增强版本"""
     
@@ -861,39 +777,3 @@ class EmotionAnalyzer:
             "interaction_summary": interaction_stats,
             "emotion_details": emotion_summary['details']
         }
-    
-    @classmethod
-    def analyze_emotional_change(cls, old_state: EnhancedEmotionalState, 
-                               new_state: EnhancedEmotionalState) -> Dict[str, Any]:
-        """分析情感变化"""
-        changes = {
-            'favor': new_state.favor - old_state.favor,
-            'intimacy': new_state.intimacy - old_state.intimacy,
-            'emotions': {},
-            'relationship_stage_changed': old_state.relationship_stage != new_state.relationship_stage,
-            'attitude_changed': old_state.descriptions.attitude != new_state.descriptions.attitude,
-            'relationship_changed': old_state.descriptions.relationship != new_state.descriptions.relationship
-        }
-        
-        # 计算情感变化
-        emotion_fields = ['joy', 'trust', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation']
-        for field in emotion_fields:
-            old_value = getattr(old_state.emotions, field)
-            new_value = getattr(new_state.emotions, field)
-            changes['emotions'][field] = new_value - old_value
-        
-        # 计算总变化量
-        total_change = abs(changes['favor']) + abs(changes['intimacy']) + \
-                      sum(abs(v) for v in changes['emotions'].values())
-        
-        changes['total_change'] = total_change
-        
-        # 判断变化级别
-        if total_change >= 8:
-            changes['change_level'] = 'major'
-        elif total_change >= 3:
-            changes['change_level'] = 'moderate'
-        else:
-            changes['change_level'] = 'minor'
-        
-        return changes

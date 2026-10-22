@@ -5,8 +5,6 @@ import heapq
 from typing import Dict, Any, Optional, List, Tuple
 from collections import OrderedDict
 import hashlib
-from dataclasses import dataclass
-from contextlib import asynccontextmanager
 import sys
 
 from astrbot.api import logger
@@ -466,15 +464,3 @@ class ShardedTTLCache:
         
         logger.info("缓存系统已安全关闭")
 
-    async def get_shard_distribution(self) -> Dict[str, Any]:
-        """获取分片分布情况"""
-        distribution = {}
-        for i, shard in enumerate(self.shards):
-            stats = shard.get_stats()
-            memory_info = shard.get_memory_info()
-            distribution[f"shard_{i}"] = {
-                "entries": stats.total_entries,
-                "memory_bytes": memory_info['total_bytes'],
-                "memory_percent": memory_info['usage_percent']
-            }
-        return distribution

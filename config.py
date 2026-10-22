@@ -8,19 +8,6 @@ class PrivacyLevel(int, Enum):
     BASIC = 1  
     DETAILED = 2
 
-class AttitudeType(str, Enum):
-    HOSTILE = "敌对"
-    COLD = "冷淡" 
-    NEUTRAL = "中立"
-    FRIENDLY = "友好"
-    INTIMATE = "热情"
-
-class RelationshipStage(str, Enum):
-    INITIAL = "初识期"
-    DEEPENING = "深化期"
-    COMMITMENT = "承诺期" 
-    SYMBIOSIS = "共生期"
-
 class PluginConfig(BaseModel):
     """插件配置模型"""
     #

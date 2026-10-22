@@ -1,17 +1,12 @@
 # models.py
 import time
-import json
 from dataclasses import dataclass, asdict, field
-from typing import Dict, Any, Optional, List, Deque, ClassVar
-from enum import Enum
-from collections import deque
-from pathlib import Path
+from typing import Dict, Any, Optional, List, ClassVar
 import re
 
 from astrbot.api import logger
 
 from .constants import EmotionConstants, TimeConstants
-from .config import AttitudeType, RelationshipStage, PrivacyLevel
 from .stage_names import get_stage_name, normalize_stage_name
 from .description_diversity import (
     RECENT_DESCRIPTION_LIMIT,
@@ -449,7 +444,7 @@ class EnhancedEmotionalState:
         过渡期增益（`apply_transition_benefits`）、里程碑加成
         （`_apply_intimacy_milestones`）、管理员命令（
         `set_intimacy` / `set_favor`）、存档修复（
-        `_try_repair_user_data`）、迁移（`migration.py`）、
+        `_try_repair_user_data`）、
         反序列化（`from_dict`）…… 逐处写 if 必有漏网的一条，
         而「负好感用户亲密度又涨起来了」直接违背用户定的规则。
 

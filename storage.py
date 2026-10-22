@@ -3,8 +3,7 @@ import json
 import asyncio
 import aiofiles
 from pathlib import Path
-from typing import Dict, Any, Optional, Set, List, Tuple
-from dataclasses import asdict
+from typing import Dict, Any, Optional
 import shutil
 from datetime import datetime, timedelta
 import hashlib
@@ -266,15 +265,6 @@ class UserStateRepository:
             except Exception as e:
                 logger.error(f"修复用户数据失败: {e}")
     
-    async def save_user_state(self, user_key: str, state: EnhancedEmotionalState):
-        """保存用户状态 - 差异化更新"""
-        await self.load_all_data()
-        
-        async with self._lock:
-            # 只更新特定用户的数据
-            self._user_data[user_key] = state.to_dict()
-            await self.user_storage.save(self._user_data)
-    
     async def save_all_user_states(self, states: Dict[str, EnhancedEmotionalState]):
         """批量保存用户状态 - 修复版本：只更新有变化的用户"""
         await self.load_all_data()
@@ -342,17 +332,6 @@ class UserStateRepository:
                 continue
         return result
     
-    async def delete_user_state(self, user_key: str) -> bool:
-        """删除用户状态"""
-        await self.load_all_data()
-        
-        async with self._lock:
-            if user_key in self._user_data:
-                del self._user_data[user_key]
-                await self.user_storage.save(self._user_data)
-                return True
-        return False
-    
     async def get_memory_data(self) -> Dict[str, Any]:
         """获取记忆数据"""
         await self.load_all_data()
@@ -366,11 +345,6 @@ class UserStateRepository:
             self._memory_data = data
             await self.memory_storage.save(self._memory_data)
     
-    async def get_user_count(self) -> int:
-        """获取用户数量"""
-        await self.load_all_data()
-        return len(self._user_data)
-
 class BackupManager:
     """备份管理器 - 修复版本"""
     
@@ -425,7 +399,7 @@ class BackupManager:
             'backup_time': datetime.now().isoformat(),
             'file_count': file_count,
             'data_dir': str(self.data_dir),
-            'plugin_version': '4.2.4'
+            'plugin_version': '4.2.5'
         }
         
         metadata_path = backup_path / 'backup_metadata.json'
@@ -461,70 +435,3 @@ class BackupManager:
                             # 无法读取元数据，跳过
                             continue
     
-    async def list_backups(self) -> List[Dict[str, Any]]:
-        """列出所有备份的详细信息"""
-        backups = []
-        for backup_dir in self.backup_dir.iterdir():
-            if backup_dir.is_dir() and backup_dir.name.startswith("emotionai_backup_"):
-                backup_info = {
-                    'name': backup_dir.name,
-                    'path': str(backup_dir),
-                    'size': self._get_dir_size(backup_dir),
-                    'files': []
-                }
-                
-                # 添加文件列表
-                for file_path in backup_dir.iterdir():
-                    if file_path.is_file():
-                        backup_info['files'].append({
-                            'name': file_path.name,
-                            'size': file_path.stat().st_size
-                        })
-                
-                # 尝试获取元数据
-                metadata_path = backup_dir / 'backup_metadata.json'
-                if metadata_path.exists():
-                    try:
-                        async with aiofiles.open(metadata_path, 'r', encoding='utf-8') as f:
-                            metadata = json.loads(await f.read())
-                            backup_info['metadata'] = metadata
-                    except Exception:
-                        pass
-                
-                backups.append(backup_info)
-        
-        return sorted(backups, key=lambda x: x['name'], reverse=True)
-    
-    def _get_dir_size(self, directory: Path) -> int:
-        """计算目录大小"""
-        total_size = 0
-        for file_path in directory.rglob('*'):
-            if file_path.is_file():
-                total_size += file_path.stat().st_size
-        return total_size
-    
-    async def restore_backup(self, backup_name: str) -> bool:
-        """从备份恢复数据"""
-        backup_path = self.backup_dir / backup_name
-        if not backup_path.exists():
-            return False
-        
-        try:
-            # 备份当前数据
-            await self.create_backup()
-            
-            # 恢复文件
-            for filename in [PathConstants.USER_DATA_FILE, PathConstants.LONG_TERM_MEMORY_FILE]:
-                src = backup_path / filename
-                dst = self.data_dir / filename
-                
-                if src.exists():
-                    shutil.copy2(src, dst)
-                    logger.info(f"恢复文件: {filename}")
-            
-            logger.info(f"成功从备份 {backup_name} 恢复数据")
-            return True
-            
-        except Exception as e:
-            logger.error(f"恢复备份失败: {e}")
-            return False

@@ -1,6 +1,5 @@
 # constants.py
 """常量定义"""
-from enum import Enum
 
 # 时间常量（秒）
 class TimeConstants:

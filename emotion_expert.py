@@ -2,11 +2,9 @@
 import re
 import json
 import time
-import random
 import asyncio
 import inspect
 from typing import Dict, Any, Optional, Tuple, List
-from dataclasses import asdict
 import hashlib
 
 from astrbot.api import logger
@@ -443,39 +441,6 @@ class EmotionAnalysisExpert:
         chain, _auto = self._build_provider_chain_parts(umo)
         return chain
 
-    async def _call_real_llm(self, user_message: str, ai_response: str,
-                             state: EnhancedEmotionalState,
-                             umo: str = None) -> Optional[str]:
-        """只调用「首选 provider」一次（调试/单发入口）
-
-        正式路径是 `_call_real_llm_with_retry` 的备选链；这里不做跨 provider
-        切换，方便单独验证首选 provider 是否可用。
-        """
-        if not self.context:
-            logger.warning("没有context，无法调用LLM")
-            return None
-        
-        providers = self._get_all_providers()
-        if not providers:
-            logger.warning("没有可用的LLM提供商")
-            return None
-        
-        # 确定目标提供商
-        target_provider = self._find_target_provider(providers, umo)
-        if not target_provider:
-            logger.warning("找不到目标LLM提供商")
-            return None
-        
-        # 构建提示词
-        prompt = self._build_emotion_analysis_prompt(user_message, ai_response, state)
-        
-        try:
-            # 实际调用LLM
-            result = await self._execute_llm_call(target_provider, prompt)
-            return result
-        except Exception as e:
-            logger.error(f"LLM调用执行失败: {e}")
-            return None
 
     def _get_provider_meta(self, provider) -> Tuple[str, str]:
         """读取 provider 的 (id, model)。

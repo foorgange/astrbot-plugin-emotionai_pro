@@ -793,43 +793,6 @@ class EnhancedMemorySystem:
             logger.error(f"获取关系上下文失败: {e}")
             return "【长期关系】记忆系统暂时不可用\n"
     
-    async def get_relationship_context_async(self, user_key: str) -> str:
-        """异步版本的关系上下文获取"""
-        try:
-            long_term = self._long_term_memory.get(user_key, [])
-            
-            # 重要事件计数 - 异步版本
-            important_count = 0
-            
-            async with self.important_events_lock:
-                for _, _, _, event in self.important_events:
-                    if event.get('user_key') == user_key:
-                        important_count += 1
-            
-            context = "【长期关系发展轨迹】\n"
-            if long_term:
-                context += f"深度互动次数: {len(long_term)}\n"
-                
-                if long_term:
-                    avg_significance = sum(item.significance for item in long_term) / len(long_term)
-                    context += f"平均情感深度: {avg_significance:.1f}/10\n"
-                
-                recent_significant = [item for item in long_term if item.significance >= 7]
-                if recent_significant:
-                    context += f"近期重要互动: {len(recent_significant)}次\n"
-            
-            if important_count > 0:
-                context += f"重要时刻: {important_count}个\n"
-            
-            if not long_term and important_count == 0:
-                context += "暂无长期互动记录\n"
-            
-            return context
-            
-        except Exception as e:
-            logger.error(f"获取关系上下文失败: {e}")
-            return "【长期关系】记忆系统暂时不可用\n"
-    
     async def get_recent_context(self, user_key: str) -> str:
         """获取近期对话上下文"""
         try:
@@ -928,81 +891,6 @@ class EnhancedMemorySystem:
                 'emotion_distribution': {},
                 'last_interaction': 0
             }
-    
-    async def search_memories(self, user_key: str, query: str = "", 
-                            start_time: float = 0, end_time: float = 0) -> List[InteractionRecord]:
-        """搜索记忆"""
-        await self._ensure_memory_loaded()
-        
-        try:
-            memories = self._long_term_memory.get(user_key, [])
-            results = []
-            
-            for memory in memories:
-                # 时间过滤
-                if start_time > 0 and memory.timestamp < start_time:
-                    continue
-                if end_time > 0 and memory.timestamp > end_time:
-                    continue
-                
-                # 关键词搜索
-                if query:
-                    query_lower = query.lower()
-                    if (query_lower in memory.user_msg.lower() or 
-                        query_lower in memory.ai_response.lower()):
-                        results.append(memory)
-                else:
-                    results.append(memory)
-            
-            # 按时间倒序排序
-            results.sort(key=lambda x: x.timestamp, reverse=True)
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"搜索记忆失败: {e}")
-            return []
-    
-    async def get_memory_summary(self) -> Dict[str, Any]:
-        """获取记忆系统摘要"""
-        await self._ensure_memory_loaded()
-        
-        try:
-            # 短期记忆统计
-            cache_stats = await self.short_term_memory.get_stats()
-            
-            # 长期记忆统计
-            total_users = len(self._long_term_memory)
-            total_records = sum(len(records) for records in self._long_term_memory.values())
-            
-            # 重要事件统计
-            async with self.important_events_lock:
-                important_count = len(self.important_events)
-                avg_importance = sum(-score for score, _, _, _ in self.important_events) / important_count if important_count > 0 else 0
-            
-            return {
-                'short_term_memory': {
-                    'total_entries': cache_stats.get('total_entries', 0),
-                    'memory_usage': cache_stats.get('memory_usage', {})
-                },
-                'long_term_memory': {
-                    'total_users': total_users,
-                    'total_records': total_records,
-                    'avg_records_per_user': total_records / total_users if total_users > 0 else 0
-                },
-                'important_events': {
-                    'count': important_count,
-                    'avg_importance': avg_importance
-                },
-                'system': {
-                    'max_long_term_memory': self.max_long_term_memory,
-                    'memory_loaded': self._memory_loaded
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"获取记忆系统摘要失败: {e}")
-            return {}
     
     async def close(self):
         """关闭记忆系统"""

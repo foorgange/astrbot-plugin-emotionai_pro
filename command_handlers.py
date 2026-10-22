@@ -1,17 +1,12 @@
 # command_handlers.py
 import time
-import asyncio
-from typing import Dict, Any, Optional, List, AsyncGenerator
-from dataclasses import asdict
+from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.star import StarTools
 
-from .models import EnhancedEmotionalState, RankingEntry
-from .managers import UserStateManager, RankingManager, SmartUpdateManager, EmotionAnalyzer
-from .memory import EnhancedMemorySystem
-from .config import PluginConfig, PrivacyLevel
+from .models import EnhancedEmotionalState
+from .config import PrivacyLevel
 from .global_mood import preview_time_decayed, MOOD_TIME_DECAY_UNIT
 
 

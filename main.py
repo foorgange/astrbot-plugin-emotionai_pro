@@ -64,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.4")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.5")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -173,9 +173,6 @@ class EmotionAIProPlugin(Star):
 
         # 原有的正则表达式模式
         self.need_assessment_pattern = re.compile(r"\[需要情感评估\]")
-
-        # 健康检查器
-        self.health_checker = None  # 延迟初始化
 
         # 全局心情（共享字段）与 bot 人设名
         self.global_mood_store = GlobalMoodStore(data_dir)
@@ -382,10 +379,6 @@ class EmotionAIProPlugin(Star):
             return f"{session_id}_{user_id}"
         return user_id
         
-    def _get_session_id(self, event: AstrMessageEvent) -> Optional[str]:
-        """获取会话ID"""
-        return event.unified_msg_origin if self.config.session_based else None
-    
     def _get_message_text(self, event: AstrMessageEvent) -> str:
         """获取消息文本 - 优化版本
 
@@ -961,11 +954,6 @@ class EmotionAIProPlugin(Star):
         
             return detailed_info
             
-    def _format_time(self, timestamp: float) -> str:
-        """格式化时间"""
-        if timestamp == 0:
-            return "从未互动"
-        return time.strftime("%m-%d %H:%M", time.localtime(timestamp))
             
     def _get_interaction_frequency(self, state: EnhancedEmotionalState) -> str:
         """获取互动频率描述"""

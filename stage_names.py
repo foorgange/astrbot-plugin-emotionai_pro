@@ -116,11 +116,6 @@ def get_stage_name(key: str) -> str:
     return _current_names.get(key, DEFAULT_STAGE_NAMES.get(key, key))
 
 
-def stage_name_map() -> Dict[str, str]:
-    """当前生效的 key→显示名 副本"""
-    return dict(_current_names)
-
-
 def valid_stage_names() -> List[str]:
     """当前生效的全部合法阶段显示名（供存档校验）"""
     return list(_current_names.values())
