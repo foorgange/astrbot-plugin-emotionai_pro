@@ -555,7 +555,7 @@ class AdminCommandHandler(BaseCommandHandler):
             if gate and not gate['met']:
                 response_lines.extend([
                     f"过渡状态: 亲密度未达标（当前 {gate['current']}/{gate['required']}，还差 {gate['gap']} 点）",
-                    "未达标期间好感度不会变化"
+                    "未达标期间好感度与关系阶段不会变化"
                 ])
             elif stage_info['intimacy_boost_active']:
                 response_lines.extend([

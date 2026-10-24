@@ -3,10 +3,7 @@
 import sys
 import os
 import asyncio
-import tempfile
-from pathlib import Path
 import unittest
-from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tests.astrbot_stub  # noqa: F401

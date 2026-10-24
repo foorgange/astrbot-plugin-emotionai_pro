@@ -370,8 +370,6 @@ class TestTerminate(unittest.TestCase):
 
     def test_terminate_with_no_tasks(self):
         """没有在跑的任务时也要能正常关闭"""
-        import emotionai_pro.main as main_mod
-
         h = Harness(behavior="ok")
 
         async def _anoop(*args, **kwargs):

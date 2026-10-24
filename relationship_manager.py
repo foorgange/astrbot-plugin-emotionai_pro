@@ -655,7 +655,7 @@ class DynamicWeightManager:
                 return (f"【阶段过渡中】{stage_info['stage_name']} → {target_display}\n"
                         f"   亲密度还未达标：{gate['current']}/{gate['required']}"
                         f"（还差 {gate['gap']} 点）\n"
-                        f"   达标前好感度不会变化；多进行深度交流、保持连续互动可以提升亲密度")
+                        f"   达标前好感度与关系阶段不会变化；多进行深度交流、保持连续互动可以提升亲密度")
             if stage_info["intimacy_boost_active"]:
                 return (f"【阶段过渡中】{stage_info['stage_name']}\n"
                         f"   当前需要提升亲密度 {stage_info['needed_intimacy_boost']} 点来适应新阶段\n"

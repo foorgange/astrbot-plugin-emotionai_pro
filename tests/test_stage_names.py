@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tests.astrbot_stub  # noqa: F401
 import tests.bootstrap  # noqa: F401
 
-from emotionai_pro import stage_names  # noqa: E402
 from emotionai_pro.stage_names import (  # noqa: E402
     DEFAULT_STAGE_NAMES, configure_stage_names, get_stage_name,
     normalize_stage_name, reset_stage_names, valid_stage_names,
@@ -275,8 +274,6 @@ class TestHotReloadAppliesStageNames(_StageNamesTestCase):
     """配置热重载必须同步阶段名（与数值边界同一注入点）"""
 
     def test_apply_numeric_bounds_also_applies_stage_names(self):
-        import asyncio
-
         from emotionai_pro.config_manager import ConfigManager
 
         cm = ConfigManager.__new__(ConfigManager)

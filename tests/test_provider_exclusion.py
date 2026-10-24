@@ -18,7 +18,6 @@ import tests.astrbot_stub  # noqa: F401
 import tests.bootstrap  # noqa: F401
 
 from emotionai_pro.emotion_expert import EmotionAnalysisExpert  # noqa: E402
-from emotionai_pro.models import EnhancedEmotionalState  # noqa: E402
 
 _OK_TEXT = "情感分析结果-" + "x" * 40
 

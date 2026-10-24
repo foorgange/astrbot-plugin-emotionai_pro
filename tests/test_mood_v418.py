@@ -32,7 +32,7 @@ import tests.bootstrap  # noqa: F401
 
 from emotionai_pro.global_mood import (  # noqa: E402
     GlobalMood, MOOD_HISTORY_LIMIT,
-    apply_mood_update, build_mood_change_reason,
+    build_mood_change_reason,
     expert_mood_trigger, mood_variant_seed,
     _EXPERT_MOOD_TRIGGERS,
 )

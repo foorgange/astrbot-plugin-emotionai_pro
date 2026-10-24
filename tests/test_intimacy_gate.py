@@ -382,7 +382,7 @@ class TestGateDisplay(_GateTestCase):
         self.assertIn("亲密度还未达标", advice)
         self.assertIn("0/20", advice)
         self.assertIn("还差 20 点", advice)
-        self.assertIn("好感度不会变化", advice)
+        self.assertIn("好感度与关系阶段不会变化", advice)
 
 
 class TestStageIntimacyGates(_GateTestCase):

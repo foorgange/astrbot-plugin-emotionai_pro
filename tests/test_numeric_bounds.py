@@ -302,7 +302,7 @@ class TestRepairKeepsSalvageableData(unittest.TestCase):
         self.repo._user_data = {"u2": broken}
         self.repo._loaded = True
 
-        result = self._load("u2")  # 不应抛异常
+        self._load("u2")  # 不应抛异常
 
         repaired = self.repo._user_data["u2"]
         self.assertEqual(repaired.get("favor"), 42, "可保留的好感度丢了")
