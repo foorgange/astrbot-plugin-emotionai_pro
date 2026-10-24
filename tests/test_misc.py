@@ -138,6 +138,13 @@ class TestFormatEmotionalState(unittest.TestCase):
         self.assertIn("下一阶段", text)
         self.assertIn("55", text)
 
+    def test_basic_shows_favor_and_intimacy(self):
+        """BASIC 分支在复合评分下显示好感度/亲密度原始值（v4.2.6）"""
+        plugin = self._make_plugin(privacy=1)
+        state = EnhancedEmotionalState(user_key="u1", favor=20, intimacy=10)
+        text = plugin._format_emotional_state(state)
+        self.assertIn("好感度：20 | 亲密度：10", text)
+
     def test_mood_uses_global(self):
         """心情显示来自全局心情而非 per-user"""
         from emotionai_pro.global_mood import GlobalMood

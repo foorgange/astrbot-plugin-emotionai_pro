@@ -64,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.5")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.6")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -870,6 +870,7 @@ class EmotionAIProPlugin(Star):
                 "【当前情感状态】\n"
                 "====================================\n"
                 f"关系阶段：{stage_info['stage_name']} ({progress_display:.1f}%)\n"
+                f"好感度：{state.favor} | 亲密度：{state.intimacy}\n"
                 f"复合评分：{composite_score:.1f}\n"
                 f"心情：{dominant_emotion} ({mood_label}) | 强度：{emotion_intensity:.2f}/1\n"
                 f"下一阶段：{next_stage_display}\n"
@@ -883,7 +884,7 @@ class EmotionAIProPlugin(Star):
                 if gate and not gate['met']:
                     base_info += (
                         f"\n过渡期：亲密度 {gate['current']}/{gate['required']}"
-                        f"（还差 {gate['gap']} 点；未达标期间好感度不变化）"
+                        f"（还差 {gate['gap']} 点；未达标期间好感度与关系阶段不变化）"
                     )
                 elif stage_info['intimacy_boost_active']:
                     base_info += f"\n过渡期：需要提升亲密度 {stage_info['needed_intimacy_boost']}点"
@@ -913,7 +914,7 @@ class EmotionAIProPlugin(Star):
                     detailed_info += (
                         f"   阶段过渡中（亲密度未达标 {stage_info['transition_progress']:.1f}%）\n"
                         f"   亲密度：{gate['current']}/{gate['required']}（还差 {gate['gap']} 点）\n"
-                        f"   未达标期间好感度不会变化\n"
+                        f"   未达标期间好感度与关系阶段不会变化\n"
                     )
                 elif stage_info['intimacy_boost_active']:
                     detailed_info += (

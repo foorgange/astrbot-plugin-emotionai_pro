@@ -360,7 +360,7 @@ class TestGateDisplay(_GateTestCase):
 
         self.assertIn("亲密度 0/20", text)
         self.assertIn("还差 20 点", text)
-        self.assertIn("未达标期间好感度不变化", text)
+        self.assertIn("未达标期间好感度与关系阶段不变化", text)
 
     def test_detailed_shows_gap_when_blocked(self):
         plugin = _make_plugin(transition_intimacy_pct=50, global_privacy_level=2)
@@ -369,7 +369,7 @@ class TestGateDisplay(_GateTestCase):
 
         self.assertIn("亲密度未达标", text)
         self.assertIn("亲密度：0/20（还差 20 点）", text)
-        self.assertIn("未达标期间好感度不会变化", text)
+        self.assertIn("未达标期间好感度与关系阶段不会变化", text)
 
     def test_no_gate_line_when_not_transitioning(self):
         plugin = _make_plugin(transition_intimacy_pct=50, global_privacy_level=1)
