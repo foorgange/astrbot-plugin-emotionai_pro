@@ -64,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.7")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.8")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -2178,6 +2178,23 @@ class EmotionAIProPlugin(Star):
     async def admin_view_favor(self, event: AstrMessageEvent, user_input: str):
         """管理员查看指定用户的好感状态"""
         async for result in self.admin_commands.view_favor(event, user_input):
+            yield result
+
+    @filter.regex(r"^查看好感\d{5,12}$")
+    async def admin_view_favor_glued(self, event: AstrMessageEvent):
+        """兜底：`查看好感+QQ号` 连写（v4.2.8）
+
+        AstrBot 标准命令匹配要求「命令名 + 空格」（`CommandFilter.filter` 只认
+        `cmd ` 前缀或整条相等），所以「查看好感2571968467」不会命中命令、会掉进
+        普通聊天。这里补一条正则入口接住这种写法；带空格的写法仍由上面的命令
+        处理，两条正则互斥不会重复回复。
+        """
+        if not event.is_at_or_wake_command:
+            return
+        m = re.match(r"^查看好感(\d{5,12})$", event.get_message_str().strip())
+        if not m:
+            return
+        async for result in self.admin_commands.view_favor(event, m.group(1)):
             yield result
         
     @filter.command("备份数据", priority=5)

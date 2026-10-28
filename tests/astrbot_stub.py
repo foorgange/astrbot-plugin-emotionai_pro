@@ -91,6 +91,7 @@ def _install():
 
     class filter:
         command = staticmethod(_identity_decorator)
+        regex = staticmethod(_identity_decorator)
         on_llm_request = staticmethod(_identity_decorator)
         on_llm_response = staticmethod(_identity_decorator)
         on_agent_done = staticmethod(_identity_decorator)

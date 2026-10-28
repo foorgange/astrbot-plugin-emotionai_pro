@@ -310,5 +310,66 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
         self.assertIn("【用户x 完整情感状态】", text)
 
 
+class TestViewFavorGluedCommand(unittest.TestCase):
+    """v4.2.8：`查看好感+QQ号` 连写也能命中
+
+    AstrBot 的 CommandFilter 只认「命令名 + 空格」或整条相等，所以
+    「查看好感2571968467」不会命中标准命令、会掉进普通聊天。兜底正则
+    负责这种写法；带空格的写法必须仍归标准命令，避免重复回复。
+    """
+
+    GLUED = "查看好感2571968467"
+    SPACED = "查看好感 2571968467"
+
+    def _run(self, message_str: str, at_or_wake: bool = True):
+        import asyncio
+
+        from emotionai_pro.main import EmotionAIProPlugin
+
+        calls = []
+
+        async def fake_view_favor(event, user_input):
+            calls.append(user_input)
+            yield f"viewed:{user_input}"
+
+        plugin = types.SimpleNamespace(
+            admin_commands=types.SimpleNamespace(view_favor=fake_view_favor)
+        )
+        event = types.SimpleNamespace(
+            is_at_or_wake_command=at_or_wake,
+            get_message_str=lambda: message_str,
+        )
+
+        async def go():
+            out = []
+            async for r in EmotionAIProPlugin.admin_view_favor_glued(plugin, event):
+                out.append(r)
+            return out
+
+        return asyncio.run(go()), calls
+
+    def test_glued_is_dispatched(self):
+        out, calls = self._run(self.GLUED)
+        self.assertEqual(calls, ["2571968467"])
+        self.assertEqual(out, ["viewed:2571968467"])
+
+    def test_spaced_is_left_to_standard_command(self):
+        """带空格写法不归兜底管，避免与标准命令重复回复"""
+        out, calls = self._run(self.SPACED)
+        self.assertEqual(calls, [])
+        self.assertEqual(out, [])
+
+    def test_ignored_without_wake(self):
+        """没 @ 机器人时兜底不响应（避免群里刷屏）"""
+        out, calls = self._run(self.GLUED, at_or_wake=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(out, [])
+
+    def test_non_digit_suffix_not_caught(self):
+        out, calls = self._run("查看好感abc")
+        self.assertEqual(calls, [])
+        self.assertEqual(out, [])
+
+
 if __name__ == "__main__":
     unittest.main()

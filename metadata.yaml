@@ -1,7 +1,7 @@
 name: astrbot_plugin_emotionai_pro
 display_name: EmotionAI Pro
 short_desc: 让 AI 拥有真实、渐进、可养成的情感与关系
-version: v4.2.7
+version: v4.2.8
 author: foorgange
 social_link: https://github.com/foorgange
 repo: https://github.com/foorgange/astrbot-plugin-emotionai_pro
