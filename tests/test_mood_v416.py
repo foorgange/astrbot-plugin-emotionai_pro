@@ -181,7 +181,7 @@ class TestDescribeMood(unittest.TestCase):
         plugin.weight_manager = DynamicWeightManager()
         plugin.analyzer = EmotionAnalyzer()
         text = plugin._format_emotional_state(state)
-        self.assertIn("愤怒 (有点生气)", text)
+        self.assertIn("愤怒（有点生气）", text)
         self.assertNotIn("心情平静", text)
 
 

@@ -157,7 +157,7 @@ class TestFormatEmotionalState(unittest.TestCase):
         self.assertIn("喜悦", text)  # 全局心情主导情感
         # v4.1.6：具体情绪主导时用该情绪的分级描述（joy=100 → 强度 1.00 → 兴高采烈）
         self.assertIn("兴高采烈", text)
-        self.assertIn("1.00/1", text)  # 强度 0~1 口径
+        self.assertIn("1.00 / 1", text)  # 强度 0~1 口径（v4.2.7 起拆行并加空格）
 
     def test_ai_sanitized_in_output(self):
         """描述中的 AI 被替换为 bot 人设名"""
