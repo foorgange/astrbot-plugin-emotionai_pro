@@ -298,11 +298,11 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
         self.assertIn("【用户10001 完整情感状态】", text)
 
     def test_header_is_first_line(self):
-        """头部仍是第一行，其余行不受影响"""
+        """头部仍是第一行，用户标识在第二行（v4.2.7 起冒号改全角）"""
         text = self._run_view_favor()
         lines = text.splitlines()
         self.assertEqual(lines[0], "【用户10001 完整情感状态】")
-        self.assertEqual(lines[1], f"用户标识: {self.USER_INPUT}")
+        self.assertEqual(lines[1], f"用户标识：{self.USER_INPUT}")
 
     def test_no_user_prefix_when_unknown(self):
         """空输入走保护分支，不会崩"""

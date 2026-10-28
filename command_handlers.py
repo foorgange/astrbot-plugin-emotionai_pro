@@ -91,15 +91,16 @@ class UserCommandHandler(BaseCommandHandler):
         # 获取基础情感状态文本
         response_text = self.plugin._format_emotional_state(state)
     
-        # 在回复开头添加用户标识
+        # 在回复开头添加用户标识（压缩成短标签：长会话串在窄渲染器里会被折行撕碎）
         if '_' in user_key:
             try:
                 session_id, user_id = user_key.split('_', 1)
-                user_identifier = f"群聊{session_id}_用户{user_id}"
+                short_session = session_id.rsplit(':', 1)[-1]
+                user_identifier = f"群聊 {short_session} · 用户 {user_id}"
             except ValueError:
-                user_identifier = f"用户{user_key}"
+                user_identifier = f"用户 {user_key}"
         else:
-            user_identifier = f"用户{user_key}"
+            user_identifier = f"用户 {user_key}"
     
         # 在原有回复前添加用户标识
         response_text = f"{user_identifier}\n\n{response_text}"
@@ -136,15 +137,15 @@ class UserCommandHandler(BaseCommandHandler):
             event.stop_event()
             return
 
-        response_lines = [f"【情感状态 TOP {limit} 排行榜】", "=================="]
+        response_lines = [f"【情感状态 TOP {limit} 排行榜】"]
         for entry in rankings:
             trend = "↑" if entry.average_score > 0 else "↓"
-            line = (
+            response_lines.append(
                 f"{entry.rank}. {entry.display_name}\n"
-                f"   综合: {entry.average_score:.1f} {trend} | 态度: {entry.attitude} | 关系: {entry.relationship}\n"
-                f"   好感: {entry.favor} | 亲密: {entry.intimacy}"
+                f"   综合 {entry.average_score:.1f} {trend} · 好感 {entry.favor} · 亲密 {entry.intimacy}\n"
+                f"   态度：{entry.attitude}\n"
+                f"   关系：{entry.relationship}"
             )
-            response_lines.append(line)
         
         yield event.plain_result("\n".join(response_lines))
         event.stop_event()
@@ -167,14 +168,14 @@ class UserCommandHandler(BaseCommandHandler):
             event.stop_event()
             return
 
-        response_lines = [f"【情感状态 BOTTOM {limit} 排行榜】", "=================="]
+        response_lines = [f"【情感状态 BOTTOM {limit} 排行榜】"]
         for entry in rankings:
-            line = (
+            response_lines.append(
                 f"{entry.rank}. {entry.display_name}\n"
-                f"   综合: {entry.average_score:.1f} | 态度: {entry.attitude} | 关系: {entry.relationship}\n"
-                f"   好感: {entry.favor} | 亲密: {entry.intimacy}"
+                f"   综合 {entry.average_score:.1f} · 好感 {entry.favor} · 亲密 {entry.intimacy}\n"
+                f"   态度：{entry.attitude}\n"
+                f"   关系：{entry.relationship}"
             )
-            response_lines.append(line)
         
         yield event.plain_result("\n".join(response_lines))
         event.stop_event()
@@ -190,10 +191,9 @@ class UserCommandHandler(BaseCommandHandler):
         
         response_lines = [
             "【关系发展阶段分析】",
-            "==================",
             f"当前阶段：{stage_info['stage_name']}",
             f"阶段描述：{stage_info['description']}",
-            f"动态权重：好感度 {stage_info['favor_weight']*100:.0f}% | 亲密度 {stage_info['intimacy_weight']*100:.0f}%",
+            f"权重：好感 {stage_info['favor_weight']*100:.0f}% · 亲密 {stage_info['intimacy_weight']*100:.0f}%",
             f"复合评分：{stage_info['composite_score']:.1f} / {stage_info['current_stage_threshold']}",
             f"阶段进度：{stage_info['progress_to_next']:.1f}%",
         ]
@@ -252,7 +252,6 @@ class UserCommandHandler(BaseCommandHandler):
 
         lines = [
             "【当前心情】",
-            "====================================",
             f"主导情绪：{mood.dominant_emotion}（{mood_label}）",
             f"强度：{mood.intensity:.2f} / 1.0",
         ]
@@ -536,17 +535,18 @@ class AdminCommandHandler(BaseCommandHandler):
 
         response_lines = [
             f"【{display_name} 完整情感状态】",
-            f"用户标识: {user_key}",
-            "==================",
-            f"关系阶段: {stage_info['stage_name']} (进度: {stage_info['progress_to_next']:.1f}%)",
-            f"动态权重: 好感{stage_info['favor_weight']*100:.0f}% | 亲密{stage_info['intimacy_weight']*100:.0f}%",
-            f"态度: {attitude_display} | 关系: {relationship_display}",
-            f"好感度: {state.favor} | 亲密度: {state.intimacy}",
-            f"复合评分: {profile['composite_score']:.1f}",
-            f"心情: {global_dominant} ({self.plugin._get_mood_label(global_intensity, global_dominant)}) | 强度: {global_intensity:.2f}/1",
-            f"互动统计: {state.stats.total_count}次 (正面: {state.stats.positive_count}, 负面: {state.stats.negative_count})",
-            f"最后互动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
-            f"状态显示: {'开启' if state.show_status else '关闭'}",
+            f"用户标识：{user_key}",
+            f"关系阶段：{stage_info['stage_name']}（进度 {stage_info['progress_to_next']:.1f}%）",
+            f"权重：好感 {stage_info['favor_weight']*100:.0f}% · 亲密 {stage_info['intimacy_weight']*100:.0f}%",
+            f"好感度：{state.favor} · 亲密度：{state.intimacy}",
+            f"复合评分：{profile['composite_score']:.1f}",
+            f"态度：{attitude_display}",
+            f"关系：{relationship_display}",
+            f"心情：{global_dominant}（{self.plugin._get_mood_label(global_intensity, global_dominant)}）",
+            f"强度：{global_intensity:.2f} / 1.0",
+            f"互动：{state.stats.total_count} 次（正面 {state.stats.positive_count} · 负面 {state.stats.negative_count}）",
+            f"最后互动：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.stats.last_interaction_time)) if state.stats.last_interaction_time > 0 else '从未互动'}",
+            f"状态显示：{'开启' if state.show_status else '关闭'}",
         ]
         
         # 添加过渡状态信息
@@ -554,22 +554,25 @@ class AdminCommandHandler(BaseCommandHandler):
             gate = stage_info.get('intimacy_gate')
             if gate and not gate['met']:
                 response_lines.extend([
-                    f"过渡状态: 亲密度未达标（当前 {gate['current']}/{gate['required']}，还差 {gate['gap']} 点）",
-                    "未达标期间好感度与关系阶段不会变化"
+                    "【过渡状态】",
+                    f"亲密度：{gate['current']} / {gate['required']}（还差 {gate['gap']} 点）",
+                    "未达标期间好感度与阶段不变",
                 ])
             elif stage_info['intimacy_boost_active']:
                 response_lines.extend([
-                    f"过渡状态: 进行中 ({stage_info['transition_progress']:.1f}%)",
-                    f"需要亲密度: +{stage_info['needed_intimacy_boost']}点"
+                    "【过渡状态】",
+                    f"进度 {stage_info['transition_progress']:.1f}%",
+                    f"还需亲密度 +{stage_info['needed_intimacy_boost']}",
                 ])
             else:
-                response_lines.append("过渡状态: 已完成")
+                response_lines.extend(["【过渡状态】", "已完成"])
         
         response_lines.extend([
             "",
             "【情感维度详情】",
-            f"  喜悦: {state.emotions.joy} | 信任: {state.emotions.trust} | 恐惧: {state.emotions.fear} | 惊讶: {state.emotions.surprise}",
-            f"  悲伤: {state.emotions.sadness} | 厌恶: {state.emotions.disgust} | 愤怒: {state.emotions.anger} | 期待: {state.emotions.anticipation}"
+            f"喜悦 {state.emotions.joy} · 信任 {state.emotions.trust} · 恐惧 {state.emotions.fear}",
+            f"惊讶 {state.emotions.surprise} · 悲伤 {state.emotions.sadness} · 厌恶 {state.emotions.disgust}",
+            f"愤怒 {state.emotions.anger} · 期待 {state.emotions.anticipation}",
         ])
         
         yield event.plain_result("\n".join(response_lines))
@@ -623,7 +626,6 @@ class DebugCommandHandler(BaseCommandHandler):
             
             response = [
                 "【缓存统计信息】",
-                "==================",
                 f"缓存条目: {stats.get('total_entries', 0)}",
                 f"访问次数: {stats.get('access_count', 0)}",
                 f"命中次数: {stats.get('hit_count', 0)}",
@@ -682,7 +684,6 @@ class DebugCommandHandler(BaseCommandHandler):
         
         debug_info = [
             "【事件调试信息】",
-            "==================",
             f"事件类型: {type(event).__name__}",
             f"发送者ID: {event.get_sender_id()}",
             f"角色: {getattr(event, 'role', '未知')}",
@@ -721,7 +722,6 @@ class DebugCommandHandler(BaseCommandHandler):
     
         debug_info = [
             "【记忆系统调试信息】",
-            "==================",
             f"用户标识: {user_key}",
         ]
     
