@@ -1,4 +1,5 @@
 # command_handlers.py
+import re
 import time
 from typing import Any, AsyncGenerator
 
@@ -8,6 +9,20 @@ from astrbot.api.event import AstrMessageEvent
 from .models import EnhancedEmotionalState
 from .config import PrivacyLevel
 from .global_mood import preview_time_decayed, MOOD_TIME_DECAY_UNIT
+
+
+def markdown_hard_breaks(text: str) -> str:
+    """把单换行升级成 markdown 硬换行（行尾补两个空格，v4.2.9）
+
+    AstrBot 的文转图模板用 marked.js 渲染 markdown（``base.html`` 里
+    ``contentElement.innerHTML = marked.parse(source)``），按 CommonMark
+    规则单个换行属于「软换行」、会被渲染成空格，整块面板会挤成一段；
+    行尾两个空格才是硬换行。纯文本渲染器看不到行尾空格，所以这个转换
+    对纯文本与 markdown 两条渲染路径都安全。
+
+    空行（段落分隔）保持原样，只给「有内容的行」补标记。
+    """
+    return re.sub(r"(?<!\n)[ \t]*\n(?!\n)", "  \n", text)
 
 
 def _format_duration(seconds: float) -> str:
@@ -38,6 +53,10 @@ class BaseCommandHandler:
         self.plugin = plugin
         self.config = plugin.config
         self.user_manager = plugin.user_manager
+
+    def _result(self, event: AstrMessageEvent, text: str):
+        """统一输出出口：多行文本转成 markdown 安全换行后再发送"""
+        return event.plain_result(markdown_hard_breaks(text))
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """检查管理员权限"""
@@ -105,7 +124,7 @@ class UserCommandHandler(BaseCommandHandler):
         # 在原有回复前添加用户标识
         response_text = f"{user_identifier}\n\n{response_text}"
     
-        yield event.plain_result(response_text)
+        yield self._result(event, response_text)
         event.stop_event()
     
     async def toggle_status_display(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -116,7 +135,7 @@ class UserCommandHandler(BaseCommandHandler):
         await self.user_manager.update_user_state(user_key, state)
         
         status_text = "开启" if state.show_status else "关闭"
-        yield event.plain_result(f"【状态显示】已{status_text}状态显示")
+        yield self._result(event, f"【状态显示】已{status_text}状态显示")
         event.stop_event()
     
     async def show_favor_ranking(self, event: AstrMessageEvent, num: str = "10") -> AsyncGenerator[Any, None]:
@@ -126,14 +145,14 @@ class UserCommandHandler(BaseCommandHandler):
             if limit <= 0:
                 raise ValueError
         except ValueError:
-            yield event.plain_result("【错误】排行数量必须是一个正整数（最大20）。")
+            yield self._result(event, "【错误】排行数量必须是一个正整数（最大20）。")
             event.stop_event()
             return
 
         rankings = await self.ranking_manager.get_enhanced_ranking(limit, True)
         
         if not rankings:
-            yield event.plain_result("【排行榜】当前没有任何用户数据。")
+            yield self._result(event, "【排行榜】当前没有任何用户数据。")
             event.stop_event()
             return
 
@@ -147,7 +166,7 @@ class UserCommandHandler(BaseCommandHandler):
                 f"   关系：{entry.relationship}"
             )
         
-        yield event.plain_result("\n".join(response_lines))
+        yield self._result(event, "\n".join(response_lines))
         event.stop_event()
     
     async def show_negative_favor_ranking(self, event: AstrMessageEvent, num: str = "10") -> AsyncGenerator[Any, None]:
@@ -157,14 +176,14 @@ class UserCommandHandler(BaseCommandHandler):
             if limit <= 0:
                 raise ValueError
         except ValueError:
-            yield event.plain_result("【错误】排行数量必须是一个正整数（最大20）。")
+            yield self._result(event, "【错误】排行数量必须是一个正整数（最大20）。")
             event.stop_event()
             return
 
         rankings = await self.ranking_manager.get_enhanced_ranking(limit, False)
         
         if not rankings:
-            yield event.plain_result("【排行榜】当前没有任何用户数据。")
+            yield self._result(event, "【排行榜】当前没有任何用户数据。")
             event.stop_event()
             return
 
@@ -177,7 +196,7 @@ class UserCommandHandler(BaseCommandHandler):
                 f"   关系：{entry.relationship}"
             )
         
-        yield event.plain_result("\n".join(response_lines))
+        yield self._result(event, "\n".join(response_lines))
         event.stop_event()
     
     async def show_relationship_stage(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -235,13 +254,13 @@ class UserCommandHandler(BaseCommandHandler):
             stage_advice,
         ])
         
-        yield event.plain_result("\n".join(response_lines))
+        yield self._result(event, "\n".join(response_lines))
         event.stop_event()
 
     async def show_global_mood(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """查看 bot 当前全局心情与最近三次变化原因（v4.1.5 新增，v4.1.6 改三次）"""
         if self.config.global_privacy_level == PrivacyLevel.FULL_SECRET:
-            yield event.plain_result("【当前心情】*保密*")
+            yield self._result(event, "【当前心情】*保密*")
             event.stop_event()
             return
 
@@ -280,7 +299,7 @@ class UserCommandHandler(BaseCommandHandler):
         else:
             lines.append("还没有值得记录的心情变化")
 
-        yield event.plain_result("\n".join(lines))
+        yield self._result(event, "\n".join(lines))
         event.stop_event()
 
 class AdminCommandHandler(BaseCommandHandler):
@@ -295,23 +314,23 @@ class AdminCommandHandler(BaseCommandHandler):
     async def set_favor(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
         """设置好感度"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
             
         try:
             favor_value = int(value)
             if not self.config.favour_min <= favor_value <= self.config.favour_max:
-                yield event.plain_result(f"【错误】好感度值必须在 {self.config.favour_min} 到 {self.config.favour_max} 之间。")
+                yield self._result(event, f"【错误】好感度值必须在 {self.config.favour_min} 到 {self.config.favour_max} 之间。")
                 event.stop_event()
                 return
         except ValueError:
-            yield event.plain_result("【错误】好感度值必须是数字")
+            yield self._result(event, "【错误】好感度值必须是数字")
             event.stop_event()
             return
             
@@ -332,29 +351,29 @@ class AdminCommandHandler(BaseCommandHandler):
         # 这里补一句说明，免得下次看面板以为亲密度「莫名其妙没了」。
         if favor_value < 0 and old_intimacy:
             message += f"；好感度已为负，亲密度同步清零（原 {old_intimacy}）"
-        yield event.plain_result(message)
+        yield self._result(event, message)
         event.stop_event()
     
     async def set_intimacy(self, event: AstrMessageEvent, user_input: str, value: str) -> AsyncGenerator[Any, None]:
         """设置亲密度"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
             
         try:
             intimacy_value = int(value)
             if not self.config.intimacy_min <= intimacy_value <= self.config.intimacy_max:
-                yield event.plain_result(f"【错误】亲密度值必须在 {self.config.intimacy_min} 到 {self.config.intimacy_max} 之间。")
+                yield self._result(event, f"【错误】亲密度值必须在 {self.config.intimacy_min} 到 {self.config.intimacy_max} 之间。")
                 event.stop_event()
                 return
         except ValueError:
-            yield event.plain_result("【错误】亲密度值必须是数字")
+            yield self._result(event, "【错误】亲密度值必须是数字")
             event.stop_event()
             return
             
@@ -367,7 +386,7 @@ class AdminCommandHandler(BaseCommandHandler):
         # （亲密度只在好感度为正时才累积）。真设了也会被模型层夹成 0，
         # 不如在这里讲清楚，免得提示「已设置成功」而实际是 0。
         if state.favor < 0:
-            yield event.plain_result(
+            yield self._result(event, 
                 f"【提示】用户 {user_input} 当前好感度为负（{state.favor}），"
                 f"处于负好感阶段：亲密度固定为 0 且不随互动变化，无法手动设置。\n"
                 f"可先用「设置好感」命令把好感度调到 0 以上，再设置亲密度。"
@@ -381,18 +400,18 @@ class AdminCommandHandler(BaseCommandHandler):
         await self.plugin.invalidate_state_cache(user_key)
 
         mode_info = "（会话模式）" if self.config.session_based else ""
-        yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的亲密度已设置为 {intimacy_value}")
+        yield self._result(event, f"【成功】用户 {user_input}{mode_info} 的亲密度已设置为 {intimacy_value}")
         event.stop_event()
     
     async def set_attitude(self, event: AstrMessageEvent, user_input: str, attitude: str) -> AsyncGenerator[Any, None]:
         """设置态度"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
             
@@ -403,7 +422,7 @@ class AdminCommandHandler(BaseCommandHandler):
         try:
             state.descriptions.update_attitude(attitude)
         except ValueError as e:
-            yield event.plain_result(f"【错误】无效的态度描述格式：{e}")
+            yield self._result(event, f"【错误】无效的态度描述格式：{e}")
             event.stop_event()
             return
 
@@ -411,18 +430,18 @@ class AdminCommandHandler(BaseCommandHandler):
         await self.plugin.invalidate_state_cache(user_key)
 
         mode_info = "（会话模式）" if self.config.session_based else ""
-        yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的态度已设置为 {attitude}")
+        yield self._result(event, f"【成功】用户 {user_input}{mode_info} 的态度已设置为 {attitude}")
         event.stop_event()
     
     async def set_relationship(self, event: AstrMessageEvent, user_input: str, relationship: str) -> AsyncGenerator[Any, None]:
         """设置关系"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
             
@@ -433,7 +452,7 @@ class AdminCommandHandler(BaseCommandHandler):
         try:
             state.descriptions.update_relationship(relationship)
         except ValueError as e:
-            yield event.plain_result(f"【错误】无效的关系描述格式：{e}")
+            yield self._result(event, f"【错误】无效的关系描述格式：{e}")
             event.stop_event()
             return
 
@@ -441,13 +460,13 @@ class AdminCommandHandler(BaseCommandHandler):
         await self.plugin.invalidate_state_cache(user_key)
 
         mode_info = "（会话模式）" if self.config.session_based else ""
-        yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的关系已设置为 {relationship}")
+        yield self._result(event, f"【成功】用户 {user_input}{mode_info} 的关系已设置为 {relationship}")
         event.stop_event()
     
     async def set_global_privacy_level(self, event: AstrMessageEvent, level: str) -> AsyncGenerator[Any, None]:
         """设置全局隐私级别"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -456,7 +475,7 @@ class AdminCommandHandler(BaseCommandHandler):
             if not 0 <= privacy_level <= 2:
                 raise ValueError
         except ValueError:
-            yield event.plain_result("【错误】隐私级别必须是 0、1 或 2\n0=完全保密, 1=基础显示, 2=详细显示")
+            yield self._result(event, "【错误】隐私级别必须是 0、1 或 2\n0=完全保密, 1=基础显示, 2=详细显示")
             event.stop_event()
             return
         
@@ -474,18 +493,18 @@ class AdminCommandHandler(BaseCommandHandler):
             logger.error(f"隐私级别配置落盘失败: {e}")
 
         logger.info(f"管理员更新全局隐私级别: {level_names[privacy_level]}")
-        yield event.plain_result(f"【全局设置】隐私级别已设置为: {level_names[privacy_level]}（全员生效）")
+        yield self._result(event, f"【全局设置】隐私级别已设置为: {level_names[privacy_level]}（全员生效）")
         event.stop_event()
     
     async def reset_favor(self, event: AstrMessageEvent, user_input: str) -> AsyncGenerator[Any, None]:
         """重置用户好感度状态"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
             
@@ -497,18 +516,18 @@ class AdminCommandHandler(BaseCommandHandler):
         await self.plugin.invalidate_state_cache(user_key)
 
         mode_info = "（会话模式）" if self.config.session_based else ""
-        yield event.plain_result(f"【成功】用户 {user_input}{mode_info} 的情感状态已完全重置")
+        yield self._result(event, f"【成功】用户 {user_input}{mode_info} 的情感状态已完全重置")
         event.stop_event()
     
     async def view_favor(self, event: AstrMessageEvent, user_input: str) -> AsyncGenerator[Any, None]:
         """管理员查看指定用户的好感状态"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         if not user_input or not user_input.strip():
-            yield event.plain_result("【错误】用户标识符不能为空")
+            yield self._result(event, "【错误】用户标识符不能为空")
             event.stop_event()
             return
         
@@ -575,13 +594,13 @@ class AdminCommandHandler(BaseCommandHandler):
             f"愤怒 {state.emotions.anger} · 期待 {state.emotions.anticipation}",
         ])
         
-        yield event.plain_result("\n".join(response_lines))
+        yield self._result(event, "\n".join(response_lines))
         event.stop_event()
     
     async def reset_plugin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """重置插件所有数据"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
@@ -590,22 +609,22 @@ class AdminCommandHandler(BaseCommandHandler):
         
         logger.info("管理员执行了插件重置操作")
         
-        yield event.plain_result("【成功】插件所有数据已重置")
+        yield self._result(event, "【成功】插件所有数据已重置")
         event.stop_event()
     
     async def backup_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """备份插件数据"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
             
         try:
             backup_name = await self.plugin.backup_manager.create_backup()
-            yield event.plain_result(f"【成功】数据备份成功: {backup_name}")
+            yield self._result(event, f"【成功】数据备份成功: {backup_name}")
             event.stop_event()
         except Exception as e:
-            yield event.plain_result(f"【错误】备份失败: {str(e)}")
+            yield self._result(event, f"【错误】备份失败: {str(e)}")
             event.stop_event()
 
 class DebugCommandHandler(BaseCommandHandler):
@@ -618,7 +637,7 @@ class DebugCommandHandler(BaseCommandHandler):
     async def show_cache_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """显示缓存统计信息 - 增强版本"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
         try:
@@ -668,17 +687,17 @@ class DebugCommandHandler(BaseCommandHandler):
                 f"提示: 缓存用于提高情感状态读取性能"
             ])
             
-            yield event.plain_result("\n".join(response))
+            yield self._result(event, "\n".join(response))
             
         except Exception as e:
-            yield event.plain_result(f"【错误】获取缓存统计失败: {str(e)}")
+            yield self._result(event, f"【错误】获取缓存统计失败: {str(e)}")
         
         event.stop_event()
     
     async def debug_event(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """调试事件结构"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -708,13 +727,13 @@ class DebugCommandHandler(BaseCommandHandler):
         test_result = self.plugin._get_message_text(event)
         debug_info.append(f"提取结果: '{test_result}'")
     
-        yield event.plain_result("\n".join(debug_info))
+        yield self._result(event, "\n".join(debug_info))
         event.stop_event()
     
     async def debug_memory(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """调试记忆系统"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -745,13 +764,13 @@ class DebugCommandHandler(BaseCommandHandler):
         except Exception as e:
             debug_info.append(f"\n调试过程中出错: {e}")
     
-        yield event.plain_result("\n".join(debug_info))
+        yield self._result(event, "\n".join(debug_info))
         event.stop_event()
     
     async def fix_interaction_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """修复互动统计数据"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
         
@@ -771,30 +790,30 @@ class DebugCommandHandler(BaseCommandHandler):
 
             await self.user_manager.update_user_state(user_key, state)
 
-            yield event.plain_result(f"【成功】修复互动统计：正面互动 {state.stats.positive_count}/{state.stats.total_count} ({positive_ratio:.1f}%)")
+            yield self._result(event, f"【成功】修复互动统计：正面互动 {state.stats.positive_count}/{state.stats.total_count} ({positive_ratio:.1f}%)")
         else:
-            yield event.plain_result("【信息】暂无互动数据需要修复")
+            yield self._result(event, "【信息】暂无互动数据需要修复")
     
         event.stop_event()
 
     async def cleanup_initial_users(self, event: AstrMessageEvent):
         """手动清理初始状态用户缓存"""
         if not self._is_admin(event):
-            yield event.plain_result(self._admin_denied_message(event))
+            yield self._result(event, self._admin_denied_message(event))
             event.stop_event()
             return
     
         try:
-            yield event.plain_result("【清理中】正在扫描和清理初始状态用户缓存...")
+            yield self._result(event, "【清理中】正在扫描和清理初始状态用户缓存...")
         
             cleaned_count = await self.plugin.user_manager.smart_cache_cleanup()
         
             if cleaned_count > 0:
-                yield event.plain_result(f"【成功】清理了 {cleaned_count} 个初始状态用户缓存")
+                yield self._result(event, f"【成功】清理了 {cleaned_count} 个初始状态用户缓存")
             else:
-                yield event.plain_result("【完成】没有找到需要清理的初始状态用户")
+                yield self._result(event, "【完成】没有找到需要清理的初始状态用户")
             
         except Exception as e:
-            yield event.plain_result(f"【错误】清理失败: {e}")
+            yield self._result(event, f"【错误】清理失败: {e}")
     
         event.stop_event()    

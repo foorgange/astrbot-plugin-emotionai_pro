@@ -298,11 +298,11 @@ class TestViewFavorHeaderNoDuplicateUser(unittest.TestCase):
         self.assertIn("【用户10001 完整情感状态】", text)
 
     def test_header_is_first_line(self):
-        """头部仍是第一行，用户标识在第二行（v4.2.7 起冒号改全角）"""
+        """头部仍是第一行，用户标识在第二行（v4.2.7 起冒号全角；v4.2.9 起行尾补 markdown 硬换行空格）"""
         text = self._run_view_favor()
         lines = text.splitlines()
-        self.assertEqual(lines[0], "【用户10001 完整情感状态】")
-        self.assertEqual(lines[1], f"用户标识：{self.USER_INPUT}")
+        self.assertEqual(lines[0].rstrip(), "【用户10001 完整情感状态】")
+        self.assertEqual(lines[1].rstrip(), f"用户标识：{self.USER_INPUT}")
 
     def test_no_user_prefix_when_unknown(self):
         """空输入走保护分支，不会崩"""
@@ -369,6 +369,40 @@ class TestViewFavorGluedCommand(unittest.TestCase):
         out, calls = self._run("查看好感abc")
         self.assertEqual(calls, [])
         self.assertEqual(out, [])
+
+
+class TestMarkdownHardBreaks(unittest.TestCase):
+    """v4.2.9：多行输出升级为 markdown 硬换行
+
+    AstrBot 文转图模板用 marked.js，单换行是软换行（渲染成空格），
+    行尾两个空格才是硬换行。纯文本渲染器看不到行尾空格。
+    """
+
+    def test_single_newline_becomes_hard_break(self):
+        from emotionai_pro.command_handlers import markdown_hard_breaks
+
+        self.assertEqual(markdown_hard_breaks("A\nB"), "A  \nB")
+
+    def test_blank_line_is_paragraph_and_untouched(self):
+        from emotionai_pro.command_handlers import markdown_hard_breaks
+
+        self.assertEqual(markdown_hard_breaks("A\n\nB"), "A\n\nB")
+
+    def test_existing_trailing_space_normalized_to_two(self):
+        from emotionai_pro.command_handlers import markdown_hard_breaks
+
+        self.assertEqual(markdown_hard_breaks("A \nB"), "A  \nB")
+        self.assertEqual(markdown_hard_breaks("A   \nB"), "A  \nB")
+
+    def test_single_line_untouched(self):
+        from emotionai_pro.command_handlers import markdown_hard_breaks
+
+        self.assertEqual(markdown_hard_breaks("【错误】用户标识符不能为空"), "【错误】用户标识符不能为空")
+
+    def test_indented_lines_keep_indent(self):
+        from emotionai_pro.command_handlers import markdown_hard_breaks
+
+        self.assertEqual(markdown_hard_breaks("1. 甲\n   综合 85.0"), "1. 甲  \n   综合 85.0")
 
 
 if __name__ == "__main__":

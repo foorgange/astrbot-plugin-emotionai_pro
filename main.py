@@ -24,7 +24,7 @@ from .cache import ShardedTTLCache
 from .managers import UserStateManager, RankingManager, SmartUpdateManager, EmotionAnalyzer
 from .memory import EnhancedMemorySystem
 from .emotion_expert import EmotionAnalysisExpert
-from .command_handlers import UserCommandHandler, AdminCommandHandler, DebugCommandHandler
+from .command_handlers import UserCommandHandler, AdminCommandHandler, DebugCommandHandler, markdown_hard_breaks
 from .relationship_manager import DynamicWeightManager
 from .attitude_manager import AttitudeRelationshipManager
 from . import relationship_style
@@ -64,7 +64,7 @@ _EMOTION_SHUTDOWN_GRACE = 3.0
 # 丢弃（STREAMING_FINISH 不发送），故改由流式净化器在流尾部读出并追加。
 _STATUS_PANEL_EXTRA_KEY = "_emotionai_status_panel"
 
-@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.8")
+@register("EmotionAI Pro", "融合优化版", "好感度驱动的记忆、态度与心情系统", "4.2.9")
 class EmotionAIProPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -1698,6 +1698,9 @@ class EmotionAIProPlugin(Star):
         if state.show_status and needs_update and self.config.global_privacy_level > PrivacyLevel.FULL_SECRET:
             status_text = self._format_emotional_state(state)
             status_text = self._sanitize_ai_text(status_text)
+            # v4.2.9：状态面板走 markdown 渲染（部分文转图模板）时单换行会被吞，
+            # 统一升级成硬换行；纯文本渲染看不到行尾空格，两不误。
+            status_text = markdown_hard_breaks(status_text)
             if self._is_streaming_event(event):
                 event.set_extra(_STATUS_PANEL_EXTRA_KEY, status_text)
                 logger.info("[DEBUG] 流式模式：状态面板已转入流式尾部追加")
